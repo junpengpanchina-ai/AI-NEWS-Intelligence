@@ -31,7 +31,7 @@ curl -X POST http://localhost:8765/api/collect
 
 编辑 `.env`，填写 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL_FAST`。
 
-`LLM_BASE_URL` 填服务根地址，不要自带 `/v1`。程序请求 `{LLM_BASE_URL}/v1/chat/completions`。
+`LLM_BASE_URL` 可以填 `https://example.com` 或 `https://example.com/v1`，程序都会请求 `https://example.com/v1/chat/completions`。
 
 ## 注意
 

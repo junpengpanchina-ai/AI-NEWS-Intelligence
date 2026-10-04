@@ -28,16 +28,23 @@ def daily_limit() -> int:
         return 20
 
 
+def build_chat_completions_url(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
+
 def require_config() -> tuple[str, str, str]:
-    base = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
+    base = os.getenv("LLM_BASE_URL", "").strip()
     key = os.getenv("LLM_API_KEY", "").strip()
     model = os.getenv("LLM_MODEL_FAST", "").strip()
     if not key:
-        raise LLMConfigError("未配置 LLM_API_KEY")
+        raise LLMConfigError("未配置 LLM_API_KEY，请先在 .env 填写模型密钥")
     if not base:
-        raise LLMConfigError("未配置 LLM_BASE_URL")
+        raise LLMConfigError("未配置 LLM_BASE_URL，请先在 .env 填写模型网关地址")
     if not model:
-        raise LLMConfigError("未配置 LLM_MODEL_FAST")
+        raise LLMConfigError("未配置 LLM_MODEL_FAST，请先填写模型名称")
     return base, key, model
 
 
@@ -59,13 +66,17 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{base}/v1/chat/completions",
+                build_chat_completions_url(base),
                 json=payload,
                 headers=headers,
             )
+    except httpx.TimeoutException as exc:
+        raise LLMCallError("模型接口超时，请检查上游服务或网络") from exc
     except httpx.HTTPError as exc:
         raise LLMCallError(f"模型接口请求失败: {exc.__class__.__name__}") from exc
 
+    if response.status_code in (401, 403):
+        raise LLMCallError("模型接口鉴权失败，请检查 API Key")
     if response.status_code >= 400:
         raise LLMCallError(f"模型接口返回 {response.status_code}")
 
