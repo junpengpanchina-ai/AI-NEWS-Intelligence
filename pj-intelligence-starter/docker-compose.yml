@@ -1,0 +1,10 @@
+services:
+  app:
+    build: ./backend
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./data:/app/data
+      - ./frontend:/app/frontend
+    env_file:
+      - .env
