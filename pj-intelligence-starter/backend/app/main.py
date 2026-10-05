@@ -78,10 +78,12 @@ async def analyze_item(item_id: int):
             url=item["url"],
             summary=item["summary"],
         )
-    except (LLMConfigError, LLMCallError) as exc:
+    except LLMConfigError as exc:
         release_quota()
-        status = 400 if isinstance(exc, LLMConfigError) else 502
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
     except Exception:
         release_quota()
         raise

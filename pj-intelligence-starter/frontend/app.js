@@ -161,6 +161,22 @@ async function openItem(id) {
   }
 }
 
+function formatError(detail) {
+  if (typeof detail === "string" && detail) return detail;
+  if (!detail || typeof detail !== "object") return "研判失败";
+  const upstream = detail.upstream_response;
+  const upstreamText = upstream == null
+    ? ""
+    : (typeof upstream === "string" ? upstream : JSON.stringify(upstream, null, 2));
+  return [
+    detail.message || "LLM upstream error",
+    detail.status_code == null ? "" : `status_code: ${detail.status_code}`,
+    detail.model ? `model: ${detail.model}` : "",
+    detail.url ? `url: ${detail.url}` : "",
+    upstreamText ? `upstream_response: ${upstreamText}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 async function runAnalyze(id) {
   const button = document.getElementById("analyze");
   const box = document.getElementById("analysis");
@@ -173,7 +189,7 @@ async function runAnalyze(id) {
     const data = await response.json();
     if (!response.ok) {
       box.className = "analysis error";
-      box.textContent = typeof data.detail === "string" ? data.detail : "研判失败";
+      box.textContent = formatError(data.detail);
       return;
     }
     box.className = "analysis";
