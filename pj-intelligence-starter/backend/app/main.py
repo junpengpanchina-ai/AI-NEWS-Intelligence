@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -16,8 +17,25 @@ from app.db import (
     reserve_quota,
     save_analysis,
 )
-from app.llm import LLMCallError, LLMConfigError, analyze, daily_limit, require_config
-from app.schemas import AnalysisOut, CollectOut, HealthOut, ItemOut
+from app.events import (
+    build_events,
+    event_prompt,
+    get_event,
+    get_event_analysis,
+    list_events,
+    save_event_analysis,
+)
+from app.llm import LLMCallError, LLMConfigError, analyze, analyze_event, daily_limit, require_config
+from app.schemas import (
+    AnalysisOut,
+    BuildEventsOut,
+    CollectOut,
+    EventAnalysisOut,
+    EventDetailOut,
+    EventOut,
+    HealthOut,
+    ItemOut,
+)
 
 load_dotenv(project_root() / ".env")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -89,6 +107,68 @@ async def analyze_item(item_id: int):
         raise
 
     return save_analysis(item_id, model, text)
+
+
+@app.post("/api/events/build", response_model=BuildEventsOut)
+def run_build_events():
+    return build_events()
+
+
+@app.get("/api/events", response_model=list[EventOut])
+def events(limit: int = 50):
+    if limit <= 0:
+        limit = 50
+    return list_events(limit)
+
+
+@app.get("/api/events/{event_id}", response_model=EventDetailOut)
+def event_detail(event_id: int):
+    event = get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="事件不存在")
+    items = event.pop("items")
+    return {"event": event, "items": items}
+
+
+@app.get("/api/event-analysis/{event_id}", response_model=EventAnalysisOut)
+def event_analysis(event_id: int):
+    if get_event(event_id) is None:
+        raise HTTPException(status_code=404, detail="事件不存在")
+    row = get_event_analysis(event_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="暂无分析")
+    return row
+
+
+@app.post("/api/events/{event_id}/analyze", response_model=EventAnalysisOut)
+async def analyze_event_item(event_id: int):
+    event = get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="事件不存在")
+    try:
+        require_config()
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limit = daily_limit()
+    if not reserve_quota(limit):
+        raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
+
+    started = time.monotonic()
+    try:
+        model, text = await analyze_event(event_prompt(event))
+    except LLMConfigError as exc:
+        release_quota()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except Exception:
+        release_quota()
+        raise
+
+    elapsed_seconds = max(0, int(round(time.monotonic() - started)))
+    return save_event_analysis(event_id, model, text, elapsed_seconds)
 
 
 @app.get("/api/analysis/{item_id}", response_model=AnalysisOut)

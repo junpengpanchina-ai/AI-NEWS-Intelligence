@@ -8,7 +8,10 @@ const GROUPS = [
 const HIGH_SCORE = 60;
 
 let items = [];
+let events = [];
 let selectedId = null;
+let selectedEventId = null;
+let viewMode = "items";
 let analyzeToken = 0;
 let timerId = null;
 
@@ -316,13 +319,222 @@ async function runAnalyze(id) {
   }
 }
 
+function renderEventList() {
+  listEl.replaceChildren();
+  if (events.length === 0) {
+    listEl.append(el("div", "empty", "NO EVENT"));
+    return;
+  }
+  events.forEach((event) => {
+    const row = el("div", selectedEventId === event.id ? "item active" : "item");
+    row.append(el("div", "title", event.title || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", "score", String(event.event_score)));
+    meta.append(el("span", null, event.primary_keyword || "--"));
+    meta.append(el("span", null, `items ${event.item_count}`));
+    meta.append(el("span", null, `src ${event.source_count}`));
+    meta.append(el("span", null, formatTime(event.last_seen_at)));
+    row.append(meta);
+    row.dataset.id = String(event.id);
+    row.addEventListener("click", () => openEvent(event.id));
+    listEl.append(row);
+  });
+}
+
+function renderEventDetail(event, itemsForEvent, saved) {
+  stopTimer();
+  const existing = Boolean(saved && saved.analysis);
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "headline", event.title || "--"));
+  detailEl.append(el("p", "summary", event.summary || "--"));
+
+  const meta = el("div", "meta");
+  meta.append(el("span", null, event.primary_keyword || "--"));
+  meta.append(el("span", "score", String(event.event_score)));
+  meta.append(el("span", null, `items ${event.item_count}`));
+  meta.append(el("span", null, `src ${event.source_count}`));
+  detailEl.append(meta);
+
+  const hint = el("div", "hint", existing ? "已有本地事件研判结果" : "");
+  hint.id = "saved-hint";
+  detailEl.append(hint);
+
+  const included = el("div", "event-items");
+  (itemsForEvent || []).forEach((item) => {
+    const row = el("div", "item");
+    row.append(el("div", "title", item.title || "--"));
+    const rowMeta = el("div", "meta");
+    rowMeta.append(el("span", null, item.source_name || "--"));
+    rowMeta.append(el("span", "score", String(item.score)));
+    rowMeta.append(el("span", null, formatTime(item.published_at)));
+    const link = document.createElement("a");
+    link.href = item.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = item.url;
+    rowMeta.append(link);
+    row.append(rowMeta);
+    included.append(row);
+  });
+  detailEl.append(included);
+
+  const actions = el("div", "actions");
+  const button = document.createElement("button");
+  button.id = "event-analyze";
+  button.type = "button";
+  button.textContent = existing ? "重新研判事件" : "AI 研判事件";
+  button.addEventListener("click", () => runEventAnalyze(event.id));
+  actions.append(button);
+  const elapsed = el("span", null, "");
+  elapsed.id = "elapsed";
+  actions.append(elapsed);
+  detailEl.append(actions);
+
+  const waitHint = el("div", "hint", "");
+  waitHint.id = "analyze-status";
+  detailEl.append(waitHint);
+
+  if (existing) {
+    const analysisMeta = el("div", "analysis-meta");
+    [
+      ["模型", saved.model || "--"],
+      ["耗时", saved.elapsed_seconds == null ? "未记录" : `${saved.elapsed_seconds} 秒`],
+      ["创建时间", formatTime(saved.created_at)],
+      ["分析类型", saved.analysis_type || "manual"],
+    ].forEach(([label, value]) => {
+      const line = el("div", "meta-line");
+      line.append(el("span", "k", label));
+      line.append(el("span", null, value));
+      analysisMeta.append(line);
+    });
+    detailEl.append(analysisMeta);
+  }
+
+  const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
+  analysis.id = "analysis";
+  detailEl.append(analysis);
+}
+
+async function openEvent(id) {
+  analyzeToken += 1;
+  selectedEventId = id;
+  selectedId = null;
+  renderEventList();
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch(`/api/events/${id}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", payload.detail || "加载失败"));
+      return;
+    }
+    let saved = null;
+    const analysisResponse = await fetch(`/api/event-analysis/${id}`);
+    if (analysisResponse.ok) saved = await analysisResponse.json();
+    renderEventDetail(payload.event, payload.items, saved);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function loadEvents() {
+  const response = await fetch("/api/events?limit=50");
+  if (!response.ok) throw new Error("events");
+  events = await response.json();
+  renderEventList();
+}
+
+async function runEventAnalyze(id) {
+  const token = ++analyzeToken;
+  const button = document.getElementById("event-analyze");
+  const box = document.getElementById("analysis");
+  const status = document.getElementById("analyze-status");
+  const elapsed = document.getElementById("elapsed");
+  const savedHint = document.getElementById("saved-hint");
+  if (!button || !box || !status || !elapsed) return;
+  const previousLabel = button.textContent === "重新研判事件" ? "重新研判事件" : "AI 研判事件";
+  button.disabled = true;
+  button.textContent = "分析中...";
+  status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
+  startTimer(elapsed);
+  try {
+    const response = await fetch(`/api/events/${id}/analyze`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (token !== analyzeToken) return;
+    if (!response.ok) {
+      box.className = "analysis error";
+      box.textContent = formatError(data.detail);
+      button.textContent = previousLabel;
+      return;
+    }
+    if (savedHint) savedHint.textContent = "已有本地事件研判结果";
+    status.textContent = "";
+    elapsed.textContent = "";
+    box.className = "analysis";
+    box.textContent = data.analysis || "";
+    button.textContent = "重新研判事件";
+  } catch (_error) {
+    if (token !== analyzeToken) return;
+    box.className = "analysis error";
+    box.textContent = "研判失败";
+    button.textContent = previousLabel;
+  } finally {
+    if (token === analyzeToken) {
+      stopTimer();
+      button.disabled = false;
+    }
+  }
+}
+
+function setView(mode) {
+  viewMode = mode;
+  document.getElementById("view-items").classList.toggle("on", mode === "items");
+  document.getElementById("view-events").classList.toggle("on", mode === "events");
+  document.getElementById("build-events").hidden = mode !== "events";
+  if (mode === "items") {
+    renderList();
+    detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
+    if (selectedId) openItem(selectedId);
+    return;
+  }
+  detailEl.textContent = selectedEventId ? "加载中" : "选择一个事件";
+  loadEvents()
+    .then(() => {
+      if (selectedEventId) return openEvent(selectedEventId);
+    })
+    .catch(() => {
+      listEl.replaceChildren(el("div", "error", "加载失败"));
+    });
+}
+
+async function buildEventList() {
+  const button = document.getElementById("build-events");
+  button.disabled = true;
+  jobEl.textContent = "构建中";
+  try {
+    const response = await fetch("/api/events/build", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = "构建失败";
+      return;
+    }
+    const errorCount = Array.isArray(data.errors) ? data.errors.length : 0;
+    jobEl.textContent = `EVT ${data.events_created}+${data.events_updated} LINK ${data.linked_items}${errorCount ? ` ERR ${errorCount}` : ""}`;
+    await loadEvents();
+  } catch (_error) {
+    jobEl.textContent = "构建失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function refresh() {
   const response = await fetch("/api/items?limit=50");
   if (!response.ok) throw new Error("items");
   items = await response.json();
   renderRadar();
   renderSignals();
-  renderList();
+  if (viewMode === "items") renderList();
 }
 
 async function runCollect() {
@@ -346,6 +558,9 @@ async function runCollect() {
 }
 
 collectBtn.addEventListener("click", runCollect);
+document.getElementById("view-items").addEventListener("click", () => setView("items"));
+document.getElementById("view-events").addEventListener("click", () => setView("events"));
+document.getElementById("build-events").addEventListener("click", buildEventList);
 refresh().catch(() => {
   listEl.replaceChildren(el("div", "error", "加载失败"));
 });

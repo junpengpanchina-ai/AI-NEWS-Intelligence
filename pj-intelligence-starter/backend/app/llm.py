@@ -153,19 +153,24 @@ def _clip(value: str, limit: int) -> str:
     return text[:limit]
 
 
-async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str, str]:
+EVENT_SYSTEM_PROMPT = """你是一个商业情报分析员。下面是同一事件下的多条公开资讯。请判断：
+1. 这个事件是什么
+2. 为什么现在发生
+3. 它是噪音、短期热点，还是值得追踪的趋势
+4. 受影响的公司、行业或用户群体
+5. 可能存在的商业机会
+6. 下一步应该调查什么
+请用中文输出，不要夸张，不要空话。"""
+
+
+async def chat(system: str, user: str) -> tuple[str, str]:
     base, key, model = require_config()
     endpoint = build_chat_completions_url(base)
-    title = _clip(title, 300)
-    source = source or ""
-    url = _clip(url, 500)
-    summary = _clip(summary, 1200)
-    user_prompt = f"请分析这条资讯：{title}\n来源：{source}\n链接：{url}\n摘要：{summary}"
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     }
     headers = {
@@ -174,7 +179,7 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
     }
     logger.info("LLM_REQUEST_URL %s", endpoint)
     logger.info("LLM_MODEL %s", model)
-    logger.info("PROMPT_LENGTH %s", len(user_prompt))
+    logger.info("PROMPT_LENGTH %s", len(user))
     async with httpx.AsyncClient(timeout=llm_timeout_seconds()) as client:
         response = await _post(client, endpoint, payload, headers, model, key)
 
@@ -214,3 +219,16 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
             )
         )
     return model, text
+
+
+async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str, str]:
+    title = _clip(title, 300)
+    source = source or ""
+    url = _clip(url, 500)
+    summary = _clip(summary, 1200)
+    user_prompt = f"请分析这条资讯：{title}\n来源：{source}\n链接：{url}\n摘要：{summary}"
+    return await chat(SYSTEM_PROMPT, user_prompt)
+
+
+async def analyze_event(user_prompt: str) -> tuple[str, str]:
+    return await chat(EVENT_SYSTEM_PROMPT, user_prompt)

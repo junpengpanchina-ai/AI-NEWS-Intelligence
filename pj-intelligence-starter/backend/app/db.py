@@ -76,6 +76,49 @@ def init_db() -> None:
                 date TEXT NOT NULL UNIQUE,
                 count INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                summary TEXT,
+                primary_keyword TEXT,
+                source_count INTEGER,
+                item_count INTEGER,
+                max_item_score INTEGER,
+                event_score INTEGER,
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                status TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS event_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER,
+                item_id INTEGER,
+                similarity_score REAL,
+                created_at TEXT,
+                UNIQUE(event_id, item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER,
+                score INTEGER,
+                reason TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS event_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER,
+                model TEXT,
+                analysis TEXT,
+                analysis_type TEXT,
+                elapsed_seconds INTEGER,
+                created_at TEXT
+            );
             """
         )
         conn.executemany(

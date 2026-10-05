@@ -120,6 +120,39 @@ h2 {
   letter-spacing: 0.16em;
 }
 
+.hot-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.hot-bar h2 {
+  margin: 0;
+}
+
+.switch {
+  display: flex;
+  gap: 6px;
+}
+
+.switch button.on {
+  color: var(--amber);
+  border-color: #6d5a2c;
+}
+
+#build-events {
+  margin-left: auto;
+}
+
+.event-items {
+  margin-top: 8px;
+}
+
+.event-items .item {
+  cursor: default;
+}
+
 .row {
   display: grid;
   grid-template-columns: 92px 1fr 28px;
