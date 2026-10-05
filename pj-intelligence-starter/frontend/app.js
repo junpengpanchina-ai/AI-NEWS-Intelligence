@@ -13,12 +13,14 @@ let keywords = [];
 let competitors = [];
 let opportunities = [];
 let dataSources = [];
+let sourceImports = [];
 let selectedId = null;
 let selectedEventId = null;
 let selectedKeywordId = null;
 let selectedPageId = null;
 let selectedOpportunityId = null;
 let selectedSourceId = null;
+let selectedImportId = null;
 let viewMode = "items";
 let analyzeToken = 0;
 let timerId = null;
@@ -703,6 +705,7 @@ function setView(mode) {
   document.getElementById("seed-keywords").hidden = mode !== "keywords";
   document.getElementById("add-competitor").hidden = mode !== "competitors";
   document.getElementById("add-source").hidden = mode !== "sources";
+  document.getElementById("import-csv").hidden = mode !== "sources";
   if (mode === "items") {
     renderList();
     detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
@@ -1307,24 +1310,53 @@ const SOURCE_TYPES = [
 ];
 const SOURCE_GAP = "当前项目卡来源不足，仅作内部假设，不作为 Build 最终依据。";
 
+const IMPORT_RECORD_TYPES = [
+  "keyword_signal",
+  "traffic_signal",
+  "payment_signal",
+  "competitor_url",
+  "serp_result",
+  "trend_signal",
+  "manual_note",
+];
+
 function renderSourceList() {
   listEl.replaceChildren();
   if (dataSources.length === 0) {
     listEl.append(el("div", "empty", "NO SOURCE"));
+  } else {
+    dataSources.forEach((source) => {
+      const row = el("div", selectedSourceId === source.id ? "item active" : "item");
+      row.append(el("div", "title", source.name || "--"));
+      const meta = el("div", "meta");
+      meta.append(el("span", null, source.source_type || "--"));
+      meta.append(el("span", null, source.provider || "--"));
+      meta.append(el("span", null, source.region || "--"));
+      meta.append(el("span", null, source.time_range || "--"));
+      meta.append(el("span", null, source.enabled ? "enabled" : "off"));
+      row.append(meta);
+      row.dataset.id = String(source.id);
+      row.addEventListener("click", () => openSource(source.id));
+      listEl.append(row);
+    });
+  }
+  listEl.append(el("div", "hint", "Data Imports"));
+  if (sourceImports.length === 0) {
+    listEl.append(el("div", "empty", "NO IMPORT"));
     return;
   }
-  dataSources.forEach((source) => {
-    const row = el("div", selectedSourceId === source.id ? "item active" : "item");
-    row.append(el("div", "title", source.name || "--"));
+  sourceImports.forEach((batch) => {
+    const row = el("div", selectedImportId === batch.id ? "item active" : "item");
+    row.append(el("div", "title", batch.import_name || "--"));
     const meta = el("div", "meta");
-    meta.append(el("span", null, source.source_type || "--"));
-    meta.append(el("span", null, source.provider || "--"));
-    meta.append(el("span", null, source.region || "--"));
-    meta.append(el("span", null, source.time_range || "--"));
-    meta.append(el("span", null, source.enabled ? "enabled" : "off"));
+    meta.append(el("span", null, batch.source_name || "--"));
+    meta.append(el("span", null, batch.record_type || "--"));
+    meta.append(el("span", null, String(batch.row_count)));
+    meta.append(el("span", null, formatTime(batch.created_at)));
+    meta.append(el("span", null, batch.status || "--"));
     row.append(meta);
-    row.dataset.id = String(source.id);
-    row.addEventListener("click", () => openSource(source.id));
+    row.dataset.importId = String(batch.id);
+    row.addEventListener("click", () => openImport(batch.id));
     listEl.append(row);
   });
 }
@@ -1350,6 +1382,7 @@ function renderSourceDetail(source) {
 
 async function openSource(id) {
   selectedSourceId = id;
+  selectedImportId = null;
   selectedId = null;
   selectedEventId = null;
   selectedKeywordId = null;
@@ -1368,6 +1401,8 @@ async function loadSources() {
   const response = await fetch("/api/sources");
   if (!response.ok) throw new Error("sources");
   dataSources = await response.json();
+  const importsResponse = await fetch("/api/imports");
+  sourceImports = importsResponse.ok ? await importsResponse.json() : [];
   renderSourceList();
 }
 
@@ -1431,6 +1466,118 @@ function showSourceForm() {
     }
   });
   detailEl.append(form);
+}
+
+function showImportForm() {
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "导入 CSV"));
+  const form = el("form", "page-form");
+  const sourceSelect = document.createElement("select");
+  dataSources.forEach((source) => {
+    const option = document.createElement("option");
+    option.value = String(source.id);
+    option.textContent = source.name;
+    sourceSelect.append(option);
+  });
+  const importName = document.createElement("input");
+  importName.required = true;
+  importName.placeholder = "import_name";
+  const recordType = document.createElement("select");
+  IMPORT_RECORD_TYPES.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    recordType.append(option);
+  });
+  recordType.value = "payment_signal";
+  const csvText = document.createElement("textarea");
+  csvText.required = true;
+  csvText.placeholder = "csv_text";
+  csvText.rows = 8;
+  const notes = document.createElement("textarea");
+  notes.placeholder = "notes";
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.textContent = "导入";
+  [sourceSelect, importName, recordType, csvText, notes, button].forEach((node) => form.append(node));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/imports/csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_id: Number(sourceSelect.value),
+          import_name: importName.value.trim(),
+          record_type: recordType.value,
+          csv_text: csvText.value,
+          notes: notes.value.trim(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        jobEl.textContent = "导入失败";
+        button.disabled = false;
+        return;
+      }
+      jobEl.textContent = `IMPORT ${data.import_id} ROWS ${data.row_count}`;
+      await loadSources();
+      await openImport(data.import_id);
+    } catch (_error) {
+      jobEl.textContent = "导入失败";
+      button.disabled = false;
+    }
+  });
+  detailEl.append(form);
+}
+
+async function openImport(id) {
+  selectedImportId = id;
+  selectedSourceId = null;
+  renderSourceList();
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch(`/api/imports/${id}`);
+    const batch = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", batch.detail || "加载失败"));
+      return;
+    }
+    detailEl.replaceChildren();
+    detailEl.append(el("div", "hint", "Data Imports"));
+    detailEl.append(el("div", "headline", batch.import_name || "--"));
+    [
+      ["source", batch.source_name],
+      ["record_type", batch.record_type],
+      ["row_count", batch.row_count],
+      ["status", batch.status],
+      ["created_at", formatTime(batch.created_at)],
+      ["notes", batch.notes],
+    ].forEach(([label, value]) => {
+      const line = el("div", "meta-line");
+      line.append(el("span", "k", label));
+      line.append(el("span", null, value === undefined || value === null || value === "" ? "--" : String(value)));
+      detailEl.append(line);
+    });
+    const rows = Array.isArray(batch.records) ? batch.records : [];
+    if (rows.length === 0) {
+      detailEl.append(el("div", "empty", "NO ROW"));
+      return;
+    }
+    rows.forEach((row) => {
+      const item = el("div", "item");
+      const title = row.normalized_domain || row.normalized_keyword || row.normalized_title || row.normalized_url || `ROW ${row.id}`;
+      item.append(el("div", "title", title));
+      const meta = el("div", "meta");
+      meta.append(el("span", null, row.normalized_url || "--"));
+      meta.append(el("span", null, row.metric_name ? `${row.metric_name} ${row.metric_value}` : "--"));
+      item.append(meta);
+      detailEl.append(item);
+    });
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
 }
 
 async function loadSourceEvidence(cardId) {
@@ -1523,6 +1670,7 @@ document.getElementById("build-events").addEventListener("click", buildEventList
 document.getElementById("seed-keywords").addEventListener("click", seedKeywordPool);
 document.getElementById("add-competitor").addEventListener("click", showCompetitorForm);
 document.getElementById("add-source").addEventListener("click", showSourceForm);
+document.getElementById("import-csv").addEventListener("click", showImportForm);
 refresh().catch(() => {
   listEl.replaceChildren(el("div", "error", "加载失败"));
 });

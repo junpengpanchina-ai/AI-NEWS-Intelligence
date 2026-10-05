@@ -257,3 +257,62 @@ class SourceRecordOut(BaseModel):
     created_at: str
     source_name: str = ""
     provider: str = ""
+
+
+class CsvImportIn(BaseModel):
+    source_id: int
+    import_name: str
+    record_type: str
+    csv_text: str = ""
+    notes: str = ""
+    original_filename: str = ""
+
+
+class CsvImportResult(BaseModel):
+    import_id: int
+    row_count: int
+    status: str
+
+
+class ImportOut(BaseModel):
+    id: int
+    source_id: int
+    import_name: str
+    source_type: str
+    record_type: str
+    original_filename: str
+    row_count: int
+    status: str
+    notes: str
+    created_at: str
+    source_name: str = ""
+
+
+class RawRecordOut(BaseModel):
+    id: int
+    import_id: int
+    source_id: int
+    record_type: str
+    raw_json: str
+    normalized_title: str
+    normalized_url: str
+    normalized_keyword: str
+    normalized_domain: str
+    metric_name: str
+    metric_value: str
+    time_range: str
+    confidence: str
+    status: str
+    created_at: str
+
+
+class ImportDetailOut(ImportOut):
+    records: list[RawRecordOut]
+
+
+class RawBindIn(BaseModel):
+    raw_record_id: int
+    linked_table: str
+    linked_id: int
+    record_type: str
+    confidence: str = "medium"

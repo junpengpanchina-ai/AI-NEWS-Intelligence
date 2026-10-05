@@ -175,7 +175,8 @@ h2 {
 #build-events,
 #seed-keywords,
 #add-competitor,
-#add-source {
+#add-source,
+#import-csv {
   margin-left: auto;
 }
 

@@ -256,6 +256,37 @@ def init_db() -> None:
                 confidence TEXT,
                 created_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS source_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER,
+                import_name TEXT,
+                source_type TEXT,
+                record_type TEXT,
+                original_filename TEXT,
+                row_count INTEGER,
+                status TEXT,
+                notes TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS raw_source_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                import_id INTEGER,
+                source_id INTEGER,
+                record_type TEXT,
+                raw_json TEXT,
+                normalized_title TEXT,
+                normalized_url TEXT,
+                normalized_keyword TEXT,
+                normalized_domain TEXT,
+                metric_name TEXT,
+                metric_value TEXT,
+                time_range TEXT,
+                confidence TEXT,
+                status TEXT,
+                created_at TEXT
+            );
             """
         )
         conn.executemany(

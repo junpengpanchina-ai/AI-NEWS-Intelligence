@@ -33,6 +33,7 @@ from app.competitors import (
     list_competitors,
     save_competitor_analysis,
 )
+from app.inbox import bind_raw_record, get_import, import_csv, list_imports, list_raw_records
 from app.ledger import (
     create_source,
     create_source_record,
@@ -88,6 +89,12 @@ from app.schemas import (
     KeywordSeedOut,
     OpportunityAnalysisOut,
     OpportunityOut,
+    CsvImportIn,
+    CsvImportResult,
+    ImportDetailOut,
+    ImportOut,
+    RawBindIn,
+    RawRecordOut,
     SourceIn,
     SourceOut,
     SourceRecordIn,
@@ -506,6 +513,42 @@ def source_records(linked_table: str, linked_id: int):
     if not table:
         raise HTTPException(status_code=400, detail="linked_table 不能为空")
     return list_source_records(table, linked_id)
+
+
+@app.post("/api/source-records/from-raw", response_model=SourceRecordOut)
+def source_record_from_raw(payload: RawBindIn):
+    try:
+        return bind_raw_record(payload.model_dump())
+    except ValueError as exc:
+        missing = str(exc) in {"数据源不存在", "原始记录不存在"}
+        raise HTTPException(status_code=404 if missing else 400, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/csv", response_model=CsvImportResult)
+def upload_csv(payload: CsvImportIn):
+    try:
+        return import_csv(payload.model_dump())
+    except ValueError as exc:
+        status = 404 if str(exc) == "数据源不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/imports", response_model=list[ImportOut])
+def imports():
+    return list_imports()
+
+
+@app.get("/api/imports/{import_id}", response_model=ImportDetailOut)
+def import_detail(import_id: int):
+    detail = get_import(import_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    return detail
+
+
+@app.get("/api/raw-records", response_model=list[RawRecordOut])
+def raw_records(source_id: int | None = None, record_type: str | None = None):
+    return list_raw_records(source_id, record_type)
 
 
 @app.post("/api/source-records", response_model=SourceRecordOut)
