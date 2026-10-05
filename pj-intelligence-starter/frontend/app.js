@@ -79,23 +79,34 @@ function signalCounts() {
   };
 }
 
-function renderSignals() {
-  const counts = signalCounts();
-  document.getElementById("stat-today").textContent = String(counts.today);
-  document.getElementById("stat-high").textContent = String(counts.high);
-  document.getElementById("stat-sources").textContent = String(counts.sources);
+function setStat(id, value) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = value;
+}
+
+function renderStats(counts) {
+  const today = counts ? String(counts.today) : "-";
+  const high = counts ? String(counts.high) : "-";
+  const sources = counts ? String(counts.sources) : "-";
+  setStat("stat-today", today);
+  setStat("stat-high", high);
+  setStat("stat-sources", sources);
   signalEl.replaceChildren();
-  const rows = [
-    ["TODAY", String(counts.today)],
-    ["HIGH ≥60", String(counts.high)],
-    ["SOURCES", String(counts.sources)],
-  ];
-  rows.forEach(([label, value]) => {
+  if (!counts) return;
+  [
+    ["TODAY", today],
+    ["HIGH ≥60", high],
+    ["SOURCES", sources],
+  ].forEach(([label, value]) => {
     const row = el("div", "sig");
     row.append(el("span", null, label));
     row.append(el("b", null, value));
     signalEl.append(row);
   });
+}
+
+function renderSignals() {
+  renderStats(signalCounts());
 }
 
 function renderList() {
@@ -112,6 +123,7 @@ function renderList() {
     meta.append(el("span", "score", String(item.score)));
     meta.append(el("span", null, formatTime(item.published_at)));
     row.append(meta);
+    row.dataset.id = String(item.id);
     row.addEventListener("click", () => openItem(item.id));
     listEl.append(row);
   });
@@ -134,8 +146,44 @@ function startTimer(node) {
   }, 1000);
 }
 
+function hasAnalysis(record) {
+  return Boolean(record && typeof record === "object" && (record.analysis || record.model));
+}
+
+function formatElapsed(record) {
+  if (!record || typeof record !== "object") return "未记录";
+  if (record.elapsedMs != null && record.elapsedMs !== "") {
+    const ms = Number(record.elapsedMs);
+    if (!Number.isNaN(ms)) return `${Math.round(ms / 1000)} 秒`;
+  }
+  if (record.elapsed_seconds != null && record.elapsed_seconds !== "") {
+    return `${record.elapsed_seconds} 秒`;
+  }
+  return "未记录";
+}
+
+function fillAnalysisMeta(record, statusLabel) {
+  const meta = document.getElementById("analysis-meta");
+  if (!meta) return;
+  meta.replaceChildren();
+  if (!hasAnalysis(record)) return;
+  [
+    ["状态", statusLabel],
+    ["模型", record.model || "--"],
+    ["耗时", formatElapsed(record)],
+    ["创建时间", formatTime(record.created_at)],
+    ["分析类型", record.analysis_type || "manual"],
+  ].forEach(([label, value]) => {
+    const row = el("div", "meta-line");
+    row.append(el("span", "k", label));
+    row.append(el("span", null, String(value)));
+    meta.append(row);
+  });
+}
+
 function renderDetail(item, saved) {
   stopTimer();
+  const existing = hasAnalysis(saved);
   detailEl.replaceChildren();
   detailEl.append(el("div", "headline", item.title));
 
@@ -154,7 +202,7 @@ function renderDetail(item, saved) {
 
   detailEl.append(el("p", "summary", item.summary || "--"));
 
-  const savedHint = el("div", "hint", saved ? "已有本地研判结果" : "");
+  const savedHint = el("div", "hint", existing ? "已有本地研判结果" : "");
   savedHint.id = "saved-hint";
   detailEl.append(savedHint);
 
@@ -162,7 +210,7 @@ function renderDetail(item, saved) {
   const button = document.createElement("button");
   button.id = "analyze";
   button.type = "button";
-  button.textContent = saved ? "重新研判" : "AI 研判";
+  button.textContent = existing ? "重新研判" : "AI 研判";
   button.addEventListener("click", () => runAnalyze(item.id));
   actions.append(button);
   const elapsed = el("span", null, "");
@@ -174,15 +222,12 @@ function renderDetail(item, saved) {
   waitHint.id = "analyze-status";
   detailEl.append(waitHint);
 
-  const analysisMeta = el("div", "meta", "");
+  const analysisMeta = el("div", "analysis-meta");
   analysisMeta.id = "analysis-meta";
-  if (saved) {
-    analysisMeta.append(el("span", null, saved.model || ""));
-    analysisMeta.append(el("span", null, formatTime(saved.created_at)));
-  }
   detailEl.append(analysisMeta);
+  if (existing) fillAnalysisMeta(saved, "已有本地研判结果");
 
-  const analysis = el("pre", "analysis", saved ? (saved.analysis || "") : "");
+  const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
   analysis.id = "analysis";
   detailEl.append(analysis);
 }
@@ -222,13 +267,8 @@ function formatError(detail) {
 }
 
 function showAnalysis(data) {
-  const meta = document.getElementById("analysis-meta");
   const box = document.getElementById("analysis");
-  if (meta) {
-    meta.replaceChildren();
-    meta.append(el("span", null, data.model || ""));
-    meta.append(el("span", null, formatTime(data.created_at)));
-  }
+  fillAnalysisMeta(data, "新研判完成");
   if (box) {
     box.className = "analysis";
     box.textContent = data.analysis || "";
@@ -258,7 +298,7 @@ async function runAnalyze(id) {
       button.textContent = previousLabel;
       return;
     }
-    if (savedHint) savedHint.textContent = "";
+    if (savedHint) savedHint.textContent = "新研判完成";
     status.textContent = "";
     elapsed.textContent = "";
     showAnalysis(data);

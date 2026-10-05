@@ -219,6 +219,22 @@ h2 {
   margin: 8px 0;
 }
 
+.analysis-meta {
+  margin: 10px 0 0;
+  color: var(--dim);
+}
+
+.meta-line {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.meta-line .k {
+  width: 72px;
+  color: var(--dim);
+}
+
 #elapsed {
   color: var(--dim);
   margin-left: 8px;
