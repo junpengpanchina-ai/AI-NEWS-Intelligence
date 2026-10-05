@@ -136,6 +136,12 @@ h2 {
   gap: 6px;
 }
 
+.switch button,
+#build-events,
+#event-analyze {
+  white-space: nowrap;
+}
+
 .switch button.on {
   color: var(--amber);
   border-color: #6d5a2c;

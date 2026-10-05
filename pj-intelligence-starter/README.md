@@ -1,6 +1,12 @@
 # PJ Intelligence V0.1
 
-本地侦查资讯看板。抓取公开资讯，去重后写入 SQLite，按本地规则排序，在页面上查看。模型只在手动点击时调用。
+PJ Intelligence 当前定位为 Google To C Product OS。
+News / Items 是辅助观察层。
+Market Signals 是市场信号层。
+后续主线是：
+Search Demand → Market Signal → Keyword Cluster → Competitor Page → Opportunity Card → Page Factory → GEO / AEO Audit → Validation Review。
+
+本地仍抓取公开资讯，去重后写入 SQLite，按本地规则排序，在页面上查看。模型只在手动点击时调用。
 
 ## 启动
 

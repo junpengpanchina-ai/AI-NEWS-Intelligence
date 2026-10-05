@@ -322,7 +322,7 @@ async function runAnalyze(id) {
 function renderEventList() {
   listEl.replaceChildren();
   if (events.length === 0) {
-    listEl.append(el("div", "empty", "NO EVENT"));
+    listEl.append(el("div", "empty", "NO SIGNAL"));
     return;
   }
   events.forEach((event) => {
@@ -345,6 +345,7 @@ function renderEventDetail(event, itemsForEvent, saved) {
   stopTimer();
   const existing = Boolean(saved && saved.analysis);
   detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "市场信号详情"));
   detailEl.append(el("div", "headline", event.title || "--"));
   detailEl.append(el("p", "summary", event.summary || "--"));
 
@@ -355,7 +356,7 @@ function renderEventDetail(event, itemsForEvent, saved) {
   meta.append(el("span", null, `src ${event.source_count}`));
   detailEl.append(meta);
 
-  const hint = el("div", "hint", existing ? "已有本地事件研判结果" : "");
+  const hint = el("div", "hint", existing ? "已有本地市场信号研判结果" : "");
   hint.id = "saved-hint";
   detailEl.append(hint);
 
@@ -382,7 +383,7 @@ function renderEventDetail(event, itemsForEvent, saved) {
   const button = document.createElement("button");
   button.id = "event-analyze";
   button.type = "button";
-  button.textContent = existing ? "重新研判事件" : "AI 研判事件";
+  button.textContent = existing ? "重新研判市场信号" : "AI 研判市场信号";
   button.addEventListener("click", () => runEventAnalyze(event.id));
   actions.append(button);
   const elapsed = el("span", null, "");
@@ -452,7 +453,7 @@ async function runEventAnalyze(id) {
   const elapsed = document.getElementById("elapsed");
   const savedHint = document.getElementById("saved-hint");
   if (!button || !box || !status || !elapsed) return;
-  const previousLabel = button.textContent === "重新研判事件" ? "重新研判事件" : "AI 研判事件";
+  const previousLabel = button.textContent === "重新研判市场信号" ? "重新研判市场信号" : "AI 研判市场信号";
   button.disabled = true;
   button.textContent = "分析中...";
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
@@ -467,12 +468,12 @@ async function runEventAnalyze(id) {
       button.textContent = previousLabel;
       return;
     }
-    if (savedHint) savedHint.textContent = "已有本地事件研判结果";
+    if (savedHint) savedHint.textContent = "已有本地市场信号研判结果";
     status.textContent = "";
     elapsed.textContent = "";
     box.className = "analysis";
     box.textContent = data.analysis || "";
-    button.textContent = "重新研判事件";
+    button.textContent = "重新研判市场信号";
   } catch (_error) {
     if (token !== analyzeToken) return;
     box.className = "analysis error";
@@ -497,7 +498,7 @@ function setView(mode) {
     if (selectedId) openItem(selectedId);
     return;
   }
-  detailEl.textContent = selectedEventId ? "加载中" : "选择一个事件";
+  detailEl.textContent = selectedEventId ? "加载中" : "选择一个市场信号";
   loadEvents()
     .then(() => {
       if (selectedEventId) return openEvent(selectedEventId);
