@@ -9,6 +9,8 @@ const HIGH_SCORE = 60;
 
 let items = [];
 let selectedId = null;
+let analyzeToken = 0;
+let timerId = null;
 
 const listEl = document.getElementById("list");
 const radarEl = document.getElementById("radar-body");
@@ -69,15 +71,24 @@ function renderRadar() {
   });
 }
 
+function signalCounts() {
+  return {
+    today: items.filter((item) => isToday(item.fetched_at)).length,
+    high: items.filter((item) => Number(item.score) >= HIGH_SCORE).length,
+    sources: new Set(items.map((item) => item.source_name)).size,
+  };
+}
+
 function renderSignals() {
+  const counts = signalCounts();
+  document.getElementById("stat-today").textContent = String(counts.today);
+  document.getElementById("stat-high").textContent = String(counts.high);
+  document.getElementById("stat-sources").textContent = String(counts.sources);
   signalEl.replaceChildren();
-  const today = items.filter((item) => isToday(item.fetched_at)).length;
-  const high = items.filter((item) => Number(item.score) >= HIGH_SCORE).length;
-  const sources = new Set(items.map((item) => item.source_name)).size;
   const rows = [
-    ["TODAY", String(today)],
-    ["HIGH ≥60", String(high)],
-    ["SOURCES", String(sources)],
+    ["TODAY", String(counts.today)],
+    ["HIGH ≥60", String(counts.high)],
+    ["SOURCES", String(counts.sources)],
   ];
   rows.forEach(([label, value]) => {
     const row = el("div", "sig");
@@ -106,7 +117,25 @@ function renderList() {
   });
 }
 
-function renderDetail(item, analysisText) {
+function stopTimer() {
+  if (timerId) {
+    clearInterval(timerId);
+    timerId = null;
+  }
+}
+
+function startTimer(node) {
+  stopTimer();
+  const started = Date.now();
+  node.textContent = "0s";
+  timerId = setInterval(() => {
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    node.textContent = `${seconds}s`;
+  }, 1000);
+}
+
+function renderDetail(item, saved) {
+  stopTimer();
   detailEl.replaceChildren();
   detailEl.append(el("div", "headline", item.title));
 
@@ -114,7 +143,6 @@ function renderDetail(item, analysisText) {
   meta.append(el("span", null, item.source_name));
   meta.append(el("span", "score", String(item.score)));
   meta.append(el("span", null, formatTime(item.published_at)));
-  if (item.author) meta.append(el("span", null, item.author));
   detailEl.append(meta);
 
   const link = document.createElement("a");
@@ -126,19 +154,41 @@ function renderDetail(item, analysisText) {
 
   detailEl.append(el("p", "summary", item.summary || "--"));
 
+  const savedHint = el("div", "hint", saved ? "已有本地研判结果" : "");
+  savedHint.id = "saved-hint";
+  detailEl.append(savedHint);
+
+  const actions = el("div", "actions");
   const button = document.createElement("button");
   button.id = "analyze";
   button.type = "button";
-  button.textContent = "AI 研判";
+  button.textContent = saved ? "重新研判" : "AI 研判";
   button.addEventListener("click", () => runAnalyze(item.id));
-  detailEl.append(button);
+  actions.append(button);
+  const elapsed = el("span", null, "");
+  elapsed.id = "elapsed";
+  actions.append(elapsed);
+  detailEl.append(actions);
 
-  const analysis = el("pre", "analysis", analysisText || "");
+  const waitHint = el("div", "hint", "");
+  waitHint.id = "analyze-status";
+  detailEl.append(waitHint);
+
+  const analysisMeta = el("div", "meta", "");
+  analysisMeta.id = "analysis-meta";
+  if (saved) {
+    analysisMeta.append(el("span", null, saved.model || ""));
+    analysisMeta.append(el("span", null, formatTime(saved.created_at)));
+  }
+  detailEl.append(analysisMeta);
+
+  const analysis = el("pre", "analysis", saved ? (saved.analysis || "") : "");
   analysis.id = "analysis";
   detailEl.append(analysis);
 }
 
 async function openItem(id) {
+  analyzeToken += 1;
   selectedId = id;
   renderList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
@@ -149,13 +199,12 @@ async function openItem(id) {
       detailEl.replaceChildren(el("div", "error", item.detail || "加载失败"));
       return;
     }
-    let analysisText = "";
+    let saved = null;
     const analysisResponse = await fetch(`/api/analysis/${id}`);
     if (analysisResponse.ok) {
-      const analysis = await analysisResponse.json();
-      analysisText = analysis.analysis || "";
+      saved = await analysisResponse.json();
     }
-    renderDetail(item, analysisText);
+    renderDetail(item, saved);
   } catch (_error) {
     detailEl.replaceChildren(el("div", "error", "加载失败"));
   }
@@ -164,41 +213,66 @@ async function openItem(id) {
 function formatError(detail) {
   if (typeof detail === "string" && detail) return detail;
   if (!detail || typeof detail !== "object") return "研判失败";
-  const upstream = detail.upstream_response;
-  const upstreamText = upstream == null
-    ? ""
-    : (typeof upstream === "string" ? upstream : JSON.stringify(upstream, null, 2));
   return [
-    detail.message || "LLM upstream error",
+    detail.message || "研判失败",
     detail.status_code == null ? "" : `status_code: ${detail.status_code}`,
     detail.model ? `model: ${detail.model}` : "",
     detail.url ? `url: ${detail.url}` : "",
-    upstreamText ? `upstream_response: ${upstreamText}` : "",
   ].filter(Boolean).join("\n");
 }
 
+function showAnalysis(data) {
+  const meta = document.getElementById("analysis-meta");
+  const box = document.getElementById("analysis");
+  if (meta) {
+    meta.replaceChildren();
+    meta.append(el("span", null, data.model || ""));
+    meta.append(el("span", null, formatTime(data.created_at)));
+  }
+  if (box) {
+    box.className = "analysis";
+    box.textContent = data.analysis || "";
+  }
+}
+
 async function runAnalyze(id) {
+  const token = ++analyzeToken;
   const button = document.getElementById("analyze");
   const box = document.getElementById("analysis");
-  if (!button || !box) return;
+  const status = document.getElementById("analyze-status");
+  const elapsed = document.getElementById("elapsed");
+  const savedHint = document.getElementById("saved-hint");
+  if (!button || !box || !status || !elapsed) return;
+  const previousLabel = button.textContent === "重新研判" ? "重新研判" : "AI 研判";
   button.disabled = true;
-  box.className = "analysis";
-  box.textContent = "研判中";
+  button.textContent = "分析中...";
+  status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
+  startTimer(elapsed);
   try {
     const response = await fetch(`/api/items/${id}/analyze`, { method: "POST" });
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
+    if (token !== analyzeToken) return;
     if (!response.ok) {
       box.className = "analysis error";
       box.textContent = formatError(data.detail);
+      button.textContent = previousLabel;
       return;
     }
-    box.className = "analysis";
-    box.textContent = data.analysis || "";
+    if (savedHint) savedHint.textContent = "";
+    status.textContent = "";
+    elapsed.textContent = "";
+    showAnalysis(data);
+    button.textContent = "重新研判";
   } catch (_error) {
+    if (token !== analyzeToken) return;
     box.className = "analysis error";
     box.textContent = "研判失败";
+    button.textContent = previousLabel;
   } finally {
-    button.disabled = false;
+    if (token === analyzeToken) {
+      stopTimer();
+      button.disabled = false;
+    }
   }
 }
 

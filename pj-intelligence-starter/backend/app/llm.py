@@ -1,19 +1,24 @@
 import asyncio
 import json
+import logging
 import os
 
 import httpx
 
-LLM_TIMEOUT_SECONDS = 90
+logger = logging.getLogger("pj.llm")
 
-SYSTEM_PROMPT = """你是一个商业情报分析员。不要写空话。请基于给定资讯判断：
-1. 这件事是什么
-2. 为什么现在发生
-3. 是否只是噪音
-4. 可能影响哪些行业或公司
-5. 是否存在可验证的商业机会
-6. 下一步应该调查什么
-请用中文输出，结构清晰，避免夸张判断。"""
+
+def llm_timeout_seconds() -> int:
+    raw = os.getenv("LLM_TIMEOUT_SECONDS", "120").strip() or "120"
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return 120
+    if seconds <= 0:
+        return 120
+    return seconds
+
+SYSTEM_PROMPT = "你是一个商业情报分析员，请用中文简洁回答。"
 
 
 class LLMConfigError(Exception):
@@ -109,7 +114,7 @@ def _timeout_error(model: str, url: str, secret: str) -> dict:
         "message": "模型接口超时，请检查上游服务或网络",
         "model": model,
         "url": _redact(url, secret),
-        "timeout_seconds": LLM_TIMEOUT_SECONDS,
+        "timeout_seconds": llm_timeout_seconds(),
     }
 
 
@@ -124,7 +129,7 @@ async def _post(
     try:
         return await asyncio.wait_for(
             client.post(endpoint, json=payload, headers=headers),
-            timeout=LLM_TIMEOUT_SECONDS,
+            timeout=llm_timeout_seconds(),
         )
     except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
         raise LLMCallError(_timeout_error(model, endpoint, secret)) from exc
@@ -141,27 +146,41 @@ async def _post(
         ) from exc
 
 
+def _clip(value: str, limit: int) -> str:
+    text = value or ""
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
 async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str, str]:
     base, key, model = require_config()
     endpoint = build_chat_completions_url(base)
-    user_prompt = f"title: {title}\nsource: {source}\nurl: {url}\nsummary: {summary or ''}"
+    title = _clip(title, 300)
+    source = source or ""
+    url = _clip(url, 500)
+    summary = _clip(summary, 1200)
+    user_prompt = f"请分析这条资讯：{title}\n来源：{source}\n链接：{url}\n摘要：{summary}"
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.2,
     }
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
+    logger.info("LLM_REQUEST_URL %s", endpoint)
+    logger.info("LLM_MODEL %s", model)
+    logger.info("PROMPT_LENGTH %s", len(user_prompt))
+    async with httpx.AsyncClient(timeout=llm_timeout_seconds()) as client:
         response = await _post(client, endpoint, payload, headers, model, key)
-        if _temperature_rejected(response):
-            payload.pop("temperature", None)
-            response = await _post(client, endpoint, payload, headers, model, key)
+
+    safe_text = _redact(response.text or "", key)
+    logger.info("LLM_STATUS_CODE %s", response.status_code)
+    logger.info("LLM_RESPONSE_PREFIX %s", safe_text[:500])
 
     if response.status_code >= 400:
         raise LLMCallError(
@@ -175,20 +194,12 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
             )
         )
 
+    content = None
     try:
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise LLMCallError(
-            _upstream_error(
-                response.status_code,
-                model,
-                endpoint,
-                _upstream_body(response, key),
-                "模型接口返回格式异常",
-                key,
-            )
-        ) from exc
+        content = data["choices"][0]["message"].get("content")
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        content = None
 
     text = str(content or "").strip()
     if not text:
@@ -197,7 +208,7 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
                 response.status_code,
                 model,
                 endpoint,
-                _upstream_body(response, key),
+                safe_text[:1000],
                 "模型接口返回空内容",
                 key,
             )

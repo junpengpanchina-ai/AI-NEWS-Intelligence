@@ -33,10 +33,24 @@ header {
   display: flex;
   align-items: center;
   gap: 14px;
-  height: 48px;
-  padding: 0 14px;
+  min-height: 48px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--line);
   background: #090b09;
+  flex-wrap: wrap;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  color: var(--dim);
+}
+
+.status b {
+  color: var(--amber);
+  font-weight: 600;
 }
 
 .brand {
@@ -53,7 +67,6 @@ header {
 }
 
 #job {
-  margin-left: auto;
   color: var(--dim);
 }
 
@@ -193,6 +206,22 @@ h2 {
   color: #c5cfc0;
   line-height: 1.55;
   margin: 0 0 12px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hint {
+  color: var(--amber);
+  margin: 8px 0;
+}
+
+#elapsed {
+  color: var(--dim);
+  margin-left: 8px;
 }
 
 .analysis {
