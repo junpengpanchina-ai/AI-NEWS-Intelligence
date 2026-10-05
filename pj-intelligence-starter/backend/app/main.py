@@ -25,7 +25,23 @@ from app.events import (
     list_events,
     save_event_analysis,
 )
-from app.llm import LLMCallError, LLMConfigError, analyze, analyze_event, daily_limit, require_config
+from app.keywords import (
+    get_keyword_analysis,
+    get_keyword_cluster,
+    keyword_prompt,
+    list_keywords,
+    save_keyword_analysis,
+    seed_keywords,
+)
+from app.llm import (
+    LLMCallError,
+    LLMConfigError,
+    analyze,
+    analyze_event,
+    analyze_keyword,
+    daily_limit,
+    require_config,
+)
 from app.schemas import (
     AnalysisOut,
     BuildEventsOut,
@@ -35,6 +51,10 @@ from app.schemas import (
     EventOut,
     HealthOut,
     ItemOut,
+    KeywordAnalysisOut,
+    KeywordClusterOut,
+    KeywordDetailOut,
+    KeywordSeedOut,
 )
 
 load_dotenv(project_root() / ".env")
@@ -169,6 +189,66 @@ async def analyze_event_item(event_id: int):
 
     elapsed_seconds = max(0, int(round(time.monotonic() - started)))
     return save_event_analysis(event_id, model, text, elapsed_seconds)
+
+
+@app.get("/api/keywords", response_model=list[KeywordClusterOut])
+def keywords():
+    return list_keywords()
+
+
+@app.post("/api/keywords/seed", response_model=KeywordSeedOut)
+def run_seed_keywords():
+    return seed_keywords()
+
+
+@app.get("/api/keywords/{cluster_id}", response_model=KeywordDetailOut)
+def keyword_detail(cluster_id: int):
+    cluster = get_keyword_cluster(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="关键词簇不存在")
+    items = cluster.pop("items")
+    return {"cluster": cluster, "items": items}
+
+
+@app.get("/api/keyword-analysis/{cluster_id}", response_model=KeywordAnalysisOut)
+def keyword_analysis(cluster_id: int):
+    if get_keyword_cluster(cluster_id) is None:
+        raise HTTPException(status_code=404, detail="关键词簇不存在")
+    row = get_keyword_analysis(cluster_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="暂无分析")
+    return row
+
+
+@app.post("/api/keywords/{cluster_id}/analyze", response_model=KeywordAnalysisOut)
+async def analyze_keyword_cluster(cluster_id: int):
+    cluster = get_keyword_cluster(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="关键词簇不存在")
+    try:
+        require_config()
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limit = daily_limit()
+    if not reserve_quota(limit):
+        raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
+
+    started = time.monotonic()
+    try:
+        model, text = await analyze_keyword(keyword_prompt(cluster))
+    except LLMConfigError as exc:
+        release_quota()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except Exception:
+        release_quota()
+        raise
+
+    elapsed_seconds = max(0, int(round(time.monotonic() - started)))
+    return save_keyword_analysis(cluster_id, model, text, elapsed_seconds)
 
 
 @app.get("/api/analysis/{item_id}", response_model=AnalysisOut)

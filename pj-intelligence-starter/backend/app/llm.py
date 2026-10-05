@@ -232,3 +232,18 @@ async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str,
 
 async def analyze_event(user_prompt: str) -> tuple[str, str]:
     return await chat(EVENT_SYSTEM_PROMPT, user_prompt)
+
+
+KEYWORD_SYSTEM_PROMPT = """你是 Google To C 产品机会分析员。请基于以下关键词簇判断：
+1. 用户搜索这个词时想解决什么问题
+2. 搜索者是开发者、学生、独立开发者、企业用户还是普通用户
+3. 适合做什么页面：教程页、对比页、工具页、榜单页、API 文档页
+4. 是否能自然导向 Tokfai / OpenAI-compatible API 注册
+5. 第一版页面应该写什么
+6. 7 天验证动作是什么
+7. 30 / 60 天止损线是什么
+用中文输出，直接给判断，不要空话。"""
+
+
+async def analyze_keyword(user_prompt: str) -> tuple[str, str]:
+    return await chat(KEYWORD_SYSTEM_PROMPT, user_prompt)

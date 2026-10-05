@@ -138,7 +138,9 @@ h2 {
 
 .switch button,
 #build-events,
-#event-analyze {
+#seed-keywords,
+#event-analyze,
+#keyword-analyze {
   white-space: nowrap;
 }
 
@@ -147,7 +149,8 @@ h2 {
   border-color: #6d5a2c;
 }
 
-#build-events {
+#build-events,
+#seed-keywords {
   margin-left: auto;
 }
 

@@ -73,3 +73,44 @@ class EventAnalysisOut(BaseModel):
     analysis_type: str
     elapsed_seconds: int | None = None
     created_at: str
+
+
+class KeywordClusterOut(BaseModel):
+    id: int
+    name: str | None = None
+    category: str | None = None
+    search_intent: str | None = None
+    page_type: str | None = None
+    priority: int
+    status: str | None = None
+    score: int
+    notes: str | None = None
+
+
+class KeywordItemOut(BaseModel):
+    id: int
+    keyword: str
+    intent: str | None = None
+    difficulty: str | None = None
+    source: str | None = None
+    status: str | None = None
+
+
+class KeywordDetailOut(BaseModel):
+    cluster: KeywordClusterOut
+    items: list[KeywordItemOut]
+
+
+class KeywordSeedOut(BaseModel):
+    clusters_created: int
+    clusters_skipped: int
+    keywords_created: int
+
+
+class KeywordAnalysisOut(BaseModel):
+    id: int
+    cluster_id: int
+    model: str
+    analysis: str
+    elapsed_seconds: int | None = None
+    created_at: str

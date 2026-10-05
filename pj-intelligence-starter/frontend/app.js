@@ -9,8 +9,10 @@ const HIGH_SCORE = 60;
 
 let items = [];
 let events = [];
+let keywords = [];
 let selectedId = null;
 let selectedEventId = null;
+let selectedKeywordId = null;
 let viewMode = "items";
 let analyzeToken = 0;
 let timerId = null;
@@ -487,21 +489,216 @@ async function runEventAnalyze(id) {
   }
 }
 
+function renderKeywordList() {
+  listEl.replaceChildren();
+  if (keywords.length === 0) {
+    listEl.append(el("div", "empty", "NO KEYWORD"));
+    return;
+  }
+  keywords.forEach((cluster) => {
+    const row = el("div", selectedKeywordId === cluster.id ? "item active" : "item");
+    row.append(el("div", "title", cluster.name || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", "score", String(cluster.score)));
+    meta.append(el("span", null, cluster.category || "--"));
+    meta.append(el("span", null, cluster.search_intent || "--"));
+    meta.append(el("span", null, cluster.page_type || "--"));
+    meta.append(el("span", null, cluster.status || "--"));
+    row.append(meta);
+    row.dataset.id = String(cluster.id);
+    row.addEventListener("click", () => openKeyword(cluster.id));
+    listEl.append(row);
+  });
+}
+
+function renderKeywordDetail(cluster, keywordItems, saved) {
+  stopTimer();
+  const existing = Boolean(saved && saved.analysis);
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "关键词簇详情"));
+  detailEl.append(el("div", "headline", cluster.name || "--"));
+
+  const meta = el("div", "meta");
+  meta.append(el("span", null, cluster.category || "--"));
+  meta.append(el("span", null, cluster.search_intent || "--"));
+  meta.append(el("span", null, cluster.page_type || "--"));
+  meta.append(el("span", "score", String(cluster.score)));
+  meta.append(el("span", null, cluster.status || "--"));
+  detailEl.append(meta);
+
+  const hint = el("div", "hint", existing ? "已有本地关键词研判结果" : "");
+  hint.id = "saved-hint";
+  detailEl.append(hint);
+
+  const included = el("div", "event-items");
+  (keywordItems || []).forEach((item) => {
+    const row = el("div", "item");
+    row.append(el("div", "title", item.keyword || "--"));
+    const rowMeta = el("div", "meta");
+    rowMeta.append(el("span", null, item.intent || "--"));
+    rowMeta.append(el("span", null, item.difficulty || "--"));
+    rowMeta.append(el("span", null, item.status || "--"));
+    row.append(rowMeta);
+    included.append(row);
+  });
+  detailEl.append(included);
+
+  const actions = el("div", "actions");
+  const button = document.createElement("button");
+  button.id = "keyword-analyze";
+  button.type = "button";
+  button.textContent = existing ? "重新研判关键词机会" : "AI 研判关键词机会";
+  button.addEventListener("click", () => runKeywordAnalyze(cluster.id));
+  actions.append(button);
+  const elapsed = el("span", null, "");
+  elapsed.id = "elapsed";
+  actions.append(elapsed);
+  detailEl.append(actions);
+
+  const waitHint = el("div", "hint", "");
+  waitHint.id = "analyze-status";
+  detailEl.append(waitHint);
+
+  if (existing) {
+    const analysisMeta = el("div", "analysis-meta");
+    [
+      ["模型", saved.model || "--"],
+      ["耗时", saved.elapsed_seconds == null ? "未记录" : `${saved.elapsed_seconds} 秒`],
+      ["创建时间", formatTime(saved.created_at)],
+    ].forEach(([label, value]) => {
+      const line = el("div", "meta-line");
+      line.append(el("span", "k", label));
+      line.append(el("span", null, value));
+      analysisMeta.append(line);
+    });
+    detailEl.append(analysisMeta);
+  }
+
+  const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
+  analysis.id = "analysis";
+  detailEl.append(analysis);
+}
+
+async function openKeyword(id) {
+  analyzeToken += 1;
+  selectedKeywordId = id;
+  selectedId = null;
+  selectedEventId = null;
+  renderKeywordList();
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch(`/api/keywords/${id}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", payload.detail || "加载失败"));
+      return;
+    }
+    let saved = null;
+    const analysisResponse = await fetch(`/api/keyword-analysis/${id}`);
+    if (analysisResponse.ok) saved = await analysisResponse.json();
+    renderKeywordDetail(payload.cluster, payload.items, saved);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function loadKeywords() {
+  const response = await fetch("/api/keywords");
+  if (!response.ok) throw new Error("keywords");
+  keywords = await response.json();
+  renderKeywordList();
+}
+
+async function runKeywordAnalyze(id) {
+  const token = ++analyzeToken;
+  const button = document.getElementById("keyword-analyze");
+  const box = document.getElementById("analysis");
+  const status = document.getElementById("analyze-status");
+  const elapsed = document.getElementById("elapsed");
+  const savedHint = document.getElementById("saved-hint");
+  if (!button || !box || !status || !elapsed) return;
+  const previousLabel = button.textContent === "重新研判关键词机会" ? "重新研判关键词机会" : "AI 研判关键词机会";
+  button.disabled = true;
+  button.textContent = "分析中...";
+  status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
+  startTimer(elapsed);
+  try {
+    const response = await fetch(`/api/keywords/${id}/analyze`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (token !== analyzeToken) return;
+    if (!response.ok) {
+      box.className = "analysis error";
+      box.textContent = formatError(data.detail);
+      button.textContent = previousLabel;
+      return;
+    }
+    if (savedHint) savedHint.textContent = "已有本地关键词研判结果";
+    status.textContent = "";
+    elapsed.textContent = "";
+    box.className = "analysis";
+    box.textContent = data.analysis || "";
+    button.textContent = "重新研判关键词机会";
+  } catch (_error) {
+    if (token !== analyzeToken) return;
+    box.className = "analysis error";
+    box.textContent = "研判失败";
+    button.textContent = previousLabel;
+  } finally {
+    if (token === analyzeToken) {
+      stopTimer();
+      button.disabled = false;
+    }
+  }
+}
+
+async function seedKeywordPool() {
+  const button = document.getElementById("seed-keywords");
+  button.disabled = true;
+  jobEl.textContent = "初始化中";
+  try {
+    const response = await fetch("/api/keywords/seed", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = "初始化失败";
+      return;
+    }
+    jobEl.textContent = `KW +${data.clusters_created} SKIP ${data.clusters_skipped}`;
+    await loadKeywords();
+  } catch (_error) {
+    jobEl.textContent = "初始化失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function setView(mode) {
   viewMode = mode;
   document.getElementById("view-items").classList.toggle("on", mode === "items");
   document.getElementById("view-events").classList.toggle("on", mode === "events");
+  document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
   document.getElementById("build-events").hidden = mode !== "events";
+  document.getElementById("seed-keywords").hidden = mode !== "keywords";
   if (mode === "items") {
     renderList();
     detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
     if (selectedId) openItem(selectedId);
     return;
   }
-  detailEl.textContent = selectedEventId ? "加载中" : "选择一个市场信号";
-  loadEvents()
+  if (mode === "events") {
+    detailEl.textContent = selectedEventId ? "加载中" : "选择一个市场信号";
+    loadEvents()
+      .then(() => {
+        if (selectedEventId) return openEvent(selectedEventId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
+    return;
+  }
+  detailEl.textContent = selectedKeywordId ? "加载中" : "选择一个关键词簇";
+  loadKeywords()
     .then(() => {
-      if (selectedEventId) return openEvent(selectedEventId);
+      if (selectedKeywordId) return openKeyword(selectedKeywordId);
     })
     .catch(() => {
       listEl.replaceChildren(el("div", "error", "加载失败"));
@@ -561,7 +758,9 @@ async function runCollect() {
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("view-items").addEventListener("click", () => setView("items"));
 document.getElementById("view-events").addEventListener("click", () => setView("events"));
+document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("build-events").addEventListener("click", buildEventList);
+document.getElementById("seed-keywords").addEventListener("click", seedKeywordPool);
 refresh().catch(() => {
   listEl.replaceChildren(el("div", "error", "加载失败"));
 });

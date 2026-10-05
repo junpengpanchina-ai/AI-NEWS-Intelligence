@@ -119,6 +119,50 @@ def init_db() -> None:
                 elapsed_seconds INTEGER,
                 created_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS keyword_clusters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                category TEXT,
+                search_intent TEXT,
+                page_type TEXT,
+                priority INTEGER,
+                status TEXT,
+                score INTEGER,
+                notes TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                UNIQUE(name)
+            );
+
+            CREATE TABLE IF NOT EXISTS keyword_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                keyword TEXT,
+                intent TEXT,
+                difficulty TEXT,
+                source TEXT,
+                status TEXT,
+                created_at TEXT,
+                UNIQUE(cluster_id, keyword)
+            );
+
+            CREATE TABLE IF NOT EXISTS keyword_scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                score INTEGER,
+                reason TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS keyword_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                model TEXT,
+                analysis TEXT,
+                elapsed_seconds INTEGER,
+                created_at TEXT
+            );
             """
         )
         conn.executemany(

@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PJ Intelligence V0.2</title>
-  <link rel="stylesheet" href="/styles.css?v=022">
+  <title>PJ Intelligence V0.3</title>
+  <link rel="stylesheet" href="/styles.css?v=030">
 </head>
 <body>
   <header>
-    <div class="brand">PJ INTELLIGENCE V0.2</div>
+    <div class="brand">PJ INTELLIGENCE V0.3</div>
     <div class="badge">LOCAL</div>
     <div class="status">
       <span>今日 <b id="stat-today">-</b></span>
@@ -30,8 +30,10 @@
         <div class="switch">
           <button id="view-items" class="on" type="button">Items</button>
           <button id="view-events" type="button">Market Signals</button>
+          <button id="view-keywords" type="button">Keywords</button>
         </div>
         <button id="build-events" type="button" hidden>构建市场信号</button>
+        <button id="seed-keywords" type="button" hidden>初始化关键词池</button>
       </div>
       <div id="list"></div>
     </section>
@@ -44,6 +46,6 @@
       <div id="detail">选择一条资讯</div>
     </section>
   </main>
-  <script src="/app.js?v=022"></script>
+  <script src="/app.js?v=030"></script>
 </body>
 </html>
