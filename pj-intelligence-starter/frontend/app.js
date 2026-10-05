@@ -489,6 +489,14 @@ async function runEventAnalyze(id) {
   }
 }
 
+function keywordGrade(score) {
+  const value = Number(score);
+  if (value >= 85) return "Build Candidate";
+  if (value >= 70) return "Research";
+  if (value >= 50) return "Observe";
+  return "Low Priority";
+}
+
 function renderKeywordList() {
   listEl.replaceChildren();
   if (keywords.length === 0) {
@@ -499,7 +507,7 @@ function renderKeywordList() {
     const row = el("div", selectedKeywordId === cluster.id ? "item active" : "item");
     row.append(el("div", "title", cluster.name || "--"));
     const meta = el("div", "meta");
-    meta.append(el("span", "score", String(cluster.score)));
+    meta.append(el("span", "score", `${cluster.score} ${keywordGrade(cluster.score)}`));
     meta.append(el("span", null, cluster.category || "--"));
     meta.append(el("span", null, cluster.search_intent || "--"));
     meta.append(el("span", null, cluster.page_type || "--"));
@@ -522,7 +530,7 @@ function renderKeywordDetail(cluster, keywordItems, saved) {
   meta.append(el("span", null, cluster.category || "--"));
   meta.append(el("span", null, cluster.search_intent || "--"));
   meta.append(el("span", null, cluster.page_type || "--"));
-  meta.append(el("span", "score", String(cluster.score)));
+  meta.append(el("span", "score", `${cluster.score} ${keywordGrade(cluster.score)}`));
   meta.append(el("span", null, cluster.status || "--"));
   detailEl.append(meta);
 
