@@ -187,8 +187,14 @@ class OpportunityOut(BaseModel):
     thirty_day_metric: str
     sixty_day_stop_rule: str
     score: int
+    keyword_score: int = 0
+    competitor_count: int = 0
+    best_competitor_score: int = 0
+    best_competitor_domain: str = ""
+    verdict_reason: str = ""
     status: str
     notes: str
+    mode: str | None = None
     created_at: str
     updated_at: str
 
@@ -200,3 +206,54 @@ class OpportunityAnalysisOut(BaseModel):
     analysis: str
     elapsed_seconds: int | None = None
     created_at: str
+
+
+class SourceIn(BaseModel):
+    name: str
+    source_type: str
+    provider: str = ""
+    url: str = ""
+    region: str = ""
+    time_range: str = ""
+    data_format: str = ""
+    credibility: str = ""
+    notes: str = ""
+    enabled: int = 1
+
+
+class SourceOut(BaseModel):
+    id: int
+    name: str
+    source_type: str
+    provider: str
+    url: str
+    region: str
+    time_range: str
+    data_format: str
+    credibility: str
+    notes: str
+    enabled: int
+    created_at: str
+    updated_at: str
+
+
+class SourceRecordIn(BaseModel):
+    source_id: int
+    record_type: str
+    linked_table: str
+    linked_id: int
+    raw_ref: str = ""
+    confidence: str = ""
+
+
+class SourceRecordOut(BaseModel):
+    id: int
+    source_id: int
+    record_type: str
+    linked_table: str
+    linked_id: int
+    raw_ref: str
+    confidence: str
+    created_at: str
+    source_name: str = ""
+    provider: str = ""

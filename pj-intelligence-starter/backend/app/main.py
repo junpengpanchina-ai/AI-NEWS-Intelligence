@@ -33,6 +33,13 @@ from app.competitors import (
     list_competitors,
     save_competitor_analysis,
 )
+from app.ledger import (
+    create_source,
+    create_source_record,
+    get_source,
+    list_source_records,
+    list_sources,
+)
 from app.keywords import (
     get_keyword_analysis,
     get_keyword_cluster,
@@ -81,6 +88,10 @@ from app.schemas import (
     KeywordSeedOut,
     OpportunityAnalysisOut,
     OpportunityOut,
+    SourceIn,
+    SourceOut,
+    SourceRecordIn,
+    SourceRecordOut,
 )
 
 load_dotenv(project_root() / ".env")
@@ -466,6 +477,44 @@ async def analyze_opportunity_card(card_id: int):
 
     elapsed_seconds = max(0, int(round(time.monotonic() - started)))
     return save_opportunity_analysis(card_id, model, text, elapsed_seconds)
+
+
+@app.get("/api/sources", response_model=list[SourceOut])
+def sources():
+    return list_sources()
+
+
+@app.post("/api/sources", response_model=SourceOut)
+def add_source(payload: SourceIn):
+    try:
+        return create_source(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/sources/{source_id}", response_model=SourceOut)
+def source_detail(source_id: int):
+    source = get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    return source
+
+
+@app.get("/api/source-records", response_model=list[SourceRecordOut])
+def source_records(linked_table: str, linked_id: int):
+    table = linked_table.strip()
+    if not table:
+        raise HTTPException(status_code=400, detail="linked_table 不能为空")
+    return list_source_records(table, linked_id)
+
+
+@app.post("/api/source-records", response_model=SourceRecordOut)
+def add_source_record(payload: SourceRecordIn):
+    try:
+        return create_source_record(payload.model_dump())
+    except ValueError as exc:
+        status = 404 if str(exc) == "数据源不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @app.get("/api/analysis/{item_id}", response_model=AnalysisOut)

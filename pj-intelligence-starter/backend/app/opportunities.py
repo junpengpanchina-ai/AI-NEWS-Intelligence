@@ -5,6 +5,7 @@ from app.db import connect
 from app.keywords import _conversion, _delivery, _tokfai, get_keyword_cluster
 
 VERDICTS = ("Build", "Research", "Observe", "Reject")
+SAMPLE_GAP = "竞品样本不足，当前只能 Research 或 Observe。"
 BUILD_PAGE_TYPES = {"tutorial", "api_docs", "comparison"}
 CLUSTER_PAGE_TYPES = {
     "教程页": "tutorial",
@@ -74,18 +75,22 @@ def decide_opportunity(cluster: dict, pages: list[dict]) -> dict:
         if int(page.get("copyability_score") or 0) >= 75 and page.get("page_type") in BUILD_PAGE_TYPES
     ]
     qualifying.sort(key=lambda page: int(page.get("copyability_score") or 0), reverse=True)
+    ranked = sorted(pages, key=lambda page: int(page.get("copyability_score") or 0), reverse=True)
+    best_any = ranked[0] if ranked else None
     best = qualifying[0] if qualifying else None
     payment_clear = any((page.get("pricing_signal") or "").strip() or (page.get("payment_signal") or "").strip() for page in pages)
-    signup_clear = any((page.get("signup_signal") or "").strip() for page in pages)
     samples_ok = best is not None
-    can_convert = conv_points >= 10 or signup_clear
+    can_convert = conv_points >= 10
     high_delivery = delivery_points <= 6
     high_risk = bool(pages) and all((page.get("risk_level") or "") == "high" for page in pages)
     off_tokfai = tokfai_points == 0
     page_type = _page_type(cluster, best)
     keyword = _target_keyword(cluster, best)
 
-    if score >= 85 and samples_ok and can_convert and not high_delivery and not high_risk:
+    if not pages and score >= 50 and not off_tokfai:
+        verdict = "Research" if score >= 70 else "Observe"
+        reason = SAMPLE_GAP
+    elif score >= 85 and samples_ok and can_convert and not high_delivery and not high_risk:
         verdict = "Build"
         reason = "关键词分不低于 85，已有可复制的教程、文档或对比页，并能导向 Tokfai 注册或 99 元体验包。"
     elif score >= 70 and (not samples_ok or not payment_clear) and not high_risk and not off_tokfai:
@@ -108,39 +113,43 @@ def decide_opportunity(cluster: dict, pages: list[dict]) -> dict:
             reason = "交付成本高，不进入页面生产。"
         else:
             reason = "无法导向注册或付费，不进入页面生产。"
+    if not pages and SAMPLE_GAP not in reason:
+        reason = f"{SAMPLE_GAP}{reason}"
 
+    domain = (best_any or {}).get("domain") or ""
+    page_label = f"{page_type}：{keyword}"
     actions = {
         "Build": (
-            f"用 {page_type} 承接 {keyword}，页内放 Tokfai 注册和 99 元体验包。",
-            f"发布一页 {page_type}，主词 {keyword}，页内放注册入口和 99 元体验包。",
-            f"7 天内发布这页，并提交收录。主词：{keyword}。",
-            "14 天记录收录、搜索点击、注册点击和体验包点击。",
-            "30 天指标：页面是否收录，以及该词带来的注册数。",
-            "60 天若没有收录或没有注册，停止加页，只保留这一页。",
+            f"用 {page_label} 承接搜索，页内放 Tokfai 注册和 99 元体验包。",
+            f"上线一页 {page_label}，参考 {domain or '已记录竞品'}，页内放注册和 99 元体验包。",
+            f"7 天上线 {page_label}。",
+            "14 天提交收录，补 FAQ，加 schema，加内链到注册页和 99 元体验包。",
+            "30 天检查这页是否有收录、曝光、点击。",
+            "60 天无注册、无付费、无有效询盘则暂停。",
         ),
         "Research": (
-            f"先补竞品样本和支付路径，再决定要不要做 {page_type}。",
-            f"先不发布。补齐 {keyword} 的竞品页、定价和注册路径后再写 {page_type}。",
-            "7 天内至少补 1 个可复制竞品页，并写清定价、注册、付费信号。",
-            "14 天根据样本决定维持 Research、升到 Build，或降为 Observe。",
-            "30 天指标：可复制竞品页数量，以及支付路径是否看清。",
-            "60 天若仍没有可复制页面或支付路径，改为 Reject。",
+            f"先补竞品样本，再决定是否上线 {page_label}。",
+            f"目标页是 {page_label}。样本不足前不发布。",
+            f"7 天先不发布。补齐样本后才上线 {page_label}。",
+            "14 天在页面存在后提交收录，补 FAQ，加 schema，加内链。样本不足则不做这四项。",
+            "30 天检查是否有收录、曝光、点击。没有页面则三项都记为无。",
+            "60 天无注册、无付费、无有效询盘则暂停。",
         ),
         "Observe": (
-            f"页面可以后做。当前只保留 {keyword} 和现有竞品记录。",
-            f"不排期做页。继续记录 {keyword}。",
-            "7 天内不制作页面，只复查关键词分和竞品变化。",
-            "14 天若分数仍低于 70，继续观察。",
-            "30 天指标：关键词分是否升到 70 以上。",
-            "60 天若分数仍低于 70，继续观察，不做页。",
+            f"先不排期。候选页是 {page_label}。",
+            f"不上线 {page_label}。",
+            f"7 天不上线 {page_label}。",
+            "14 天不提交收录，不补 FAQ，不加 schema，不加内链。",
+            "30 天先不把收录、曝光、点击当作目标。",
+            "60 天无注册、无付费、无有效询盘则继续暂停。",
         ),
         "Reject": (
             "不制作页面。",
-            "不安排第一页。",
-            "7 天内不投入页面生产。",
-            "14 天不复开，除非关键词或竞品证据变了。",
-            "30 天指标：无。不设增长目标。",
-            "60 天不重启。",
+            f"不上线 {page_label}。",
+            f"7 天不上线 {page_label}。",
+            "14 天不提交收录，不补 FAQ，不加 schema，不加内链。",
+            "30 天不追踪收录、曝光、点击。",
+            "60 天无注册、无付费、无有效询盘则暂停。",
         ),
     }
     angle, first_page, seven, fourteen, thirty, sixty = actions[verdict]
@@ -158,6 +167,11 @@ def decide_opportunity(cluster: dict, pages: list[dict]) -> dict:
         "thirty_day_metric": thirty,
         "sixty_day_stop_rule": sixty,
         "score": score,
+        "keyword_score": score,
+        "competitor_count": len(pages),
+        "best_competitor_score": int((best_any or {}).get("copyability_score") or 0),
+        "best_competitor_domain": domain,
+        "verdict_reason": reason,
         "status": "open",
         "notes": reason,
     }
@@ -166,6 +180,11 @@ def decide_opportunity(cluster: dict, pages: list[dict]) -> dict:
 def _row(row) -> dict:
     data = dict(row)
     data["score"] = int(data.get("score") or 0)
+    data["keyword_score"] = int(data.get("keyword_score") or data["score"] or 0)
+    data["competitor_count"] = int(data.get("competitor_count") or 0)
+    data["best_competitor_score"] = int(data.get("best_competitor_score") or 0)
+    data["best_competitor_domain"] = data.get("best_competitor_domain") or ""
+    data["verdict_reason"] = data.get("verdict_reason") or data.get("notes") or ""
     for key in (
         "title",
         "verdict",
@@ -197,7 +216,8 @@ def list_opportunities() -> list[dict]:
             SELECT id, cluster_id, title, verdict, target_keyword, page_type, user_intent,
                    competitor_summary, product_angle, first_page_plan, seven_day_action,
                    fourteen_day_action, thirty_day_metric, sixty_day_stop_rule,
-                   score, status, notes, created_at, updated_at
+                   score, keyword_score, competitor_count, best_competitor_score,
+                   best_competitor_domain, verdict_reason, status, notes, created_at, updated_at
             FROM opportunity_cards
             ORDER BY score DESC, id ASC
             """
@@ -215,7 +235,8 @@ def get_opportunity(card_id: int) -> dict | None:
             SELECT id, cluster_id, title, verdict, target_keyword, page_type, user_intent,
                    competitor_summary, product_angle, first_page_plan, seven_day_action,
                    fourteen_day_action, thirty_day_metric, sixty_day_stop_rule,
-                   score, status, notes, created_at, updated_at
+                   score, keyword_score, competitor_count, best_competitor_score,
+                   best_competitor_domain, verdict_reason, status, notes, created_at, updated_at
             FROM opportunity_cards
             WHERE id = ?
             """,
@@ -226,6 +247,37 @@ def get_opportunity(card_id: int) -> dict | None:
         return _row(row)
     finally:
         conn.close()
+
+
+_CARD_FIELDS = (
+    "title",
+    "verdict",
+    "target_keyword",
+    "page_type",
+    "user_intent",
+    "competitor_summary",
+    "product_angle",
+    "first_page_plan",
+    "seven_day_action",
+    "fourteen_day_action",
+    "thirty_day_metric",
+    "sixty_day_stop_rule",
+    "score",
+    "keyword_score",
+    "competitor_count",
+    "best_competitor_score",
+    "best_competitor_domain",
+    "verdict_reason",
+    "status",
+    "notes",
+)
+
+
+def _same_card(current: dict, fields: dict) -> bool:
+    for key in _CARD_FIELDS:
+        if str(current.get(key) or "") != str(fields.get(key) or ""):
+            return False
+    return True
 
 
 def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
@@ -240,7 +292,12 @@ def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
     conn = connect()
     try:
         existing = conn.execute(
-            "SELECT id, created_at FROM opportunity_cards WHERE cluster_id = ? ORDER BY id ASC LIMIT 1",
+            """
+            SELECT id FROM opportunity_cards
+            WHERE cluster_id = ? AND COALESCE(status, '') != 'archived'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
             (cluster_id,),
         ).fetchone()
         if existing is None:
@@ -250,8 +307,9 @@ def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
                     cluster_id, title, verdict, target_keyword, page_type, user_intent,
                     competitor_summary, product_angle, first_page_plan, seven_day_action,
                     fourteen_day_action, thirty_day_metric, sixty_day_stop_rule,
-                    score, status, notes, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    score, keyword_score, competitor_count, best_competitor_score,
+                    best_competitor_domain, verdict_reason, status, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     cluster_id,
@@ -268,6 +326,11 @@ def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
                     fields["thirty_day_metric"],
                     fields["sixty_day_stop_rule"],
                     fields["score"],
+                    fields["keyword_score"],
+                    fields["competitor_count"],
+                    fields["best_competitor_score"],
+                    fields["best_competitor_domain"],
+                    fields["verdict_reason"],
                     fields["status"],
                     fields["notes"],
                     now,
@@ -275,15 +338,26 @@ def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
                 ),
             )
             card_id = int(cur.lastrowid)
+            mode = "created"
+            conn.commit()
         else:
             card_id = int(existing["id"])
+            conn.close()
+            conn = None
+            current = get_opportunity(card_id)
+            if current and _same_card(current, fields):
+                current["mode"] = "existing"
+                return current
+            conn = connect()
             conn.execute(
                 """
                 UPDATE opportunity_cards
                 SET title = ?, verdict = ?, target_keyword = ?, page_type = ?, user_intent = ?,
                     competitor_summary = ?, product_angle = ?, first_page_plan = ?,
                     seven_day_action = ?, fourteen_day_action = ?, thirty_day_metric = ?,
-                    sixty_day_stop_rule = ?, score = ?, status = ?, notes = ?, updated_at = ?
+                    sixty_day_stop_rule = ?, score = ?, keyword_score = ?, competitor_count = ?,
+                    best_competitor_score = ?, best_competitor_domain = ?, verdict_reason = ?,
+                    status = ?, notes = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -300,16 +374,27 @@ def create_opportunity_from_keyword(cluster_id: int) -> dict | None:
                     fields["thirty_day_metric"],
                     fields["sixty_day_stop_rule"],
                     fields["score"],
+                    fields["keyword_score"],
+                    fields["competitor_count"],
+                    fields["best_competitor_score"],
+                    fields["best_competitor_domain"],
+                    fields["verdict_reason"],
                     fields["status"],
                     fields["notes"],
                     now,
                     card_id,
                 ),
             )
-        conn.commit()
+            mode = "updated"
+            conn.commit()
     finally:
-        conn.close()
-    return get_opportunity(card_id)
+        if conn is not None:
+            conn.close()
+    card = get_opportunity(card_id)
+    if card is None:
+        return None
+    card["mode"] = mode
+    return card
 
 
 def get_opportunity_analysis(card_id: int) -> dict | None:

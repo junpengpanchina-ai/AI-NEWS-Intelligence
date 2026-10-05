@@ -12,11 +12,13 @@ let events = [];
 let keywords = [];
 let competitors = [];
 let opportunities = [];
+let dataSources = [];
 let selectedId = null;
 let selectedEventId = null;
 let selectedKeywordId = null;
 let selectedPageId = null;
 let selectedOpportunityId = null;
+let selectedSourceId = null;
 let viewMode = "items";
 let analyzeToken = 0;
 let timerId = null;
@@ -696,9 +698,11 @@ function setView(mode) {
   document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
   document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
+  document.getElementById("view-sources").classList.toggle("on", mode === "sources");
   document.getElementById("build-events").hidden = mode !== "events";
   document.getElementById("seed-keywords").hidden = mode !== "keywords";
   document.getElementById("add-competitor").hidden = mode !== "competitors";
+  document.getElementById("add-source").hidden = mode !== "sources";
   if (mode === "items") {
     renderList();
     detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
@@ -732,6 +736,17 @@ function setView(mode) {
     loadOpportunities()
       .then(() => {
         if (selectedOpportunityId) return openOpportunity(selectedOpportunityId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
+    return;
+  }
+  if (mode === "sources") {
+    detailEl.textContent = selectedSourceId ? "加载中" : "选择一个数据源";
+    loadSources()
+      .then(() => {
+        if (selectedSourceId) return openSource(selectedSourceId);
       })
       .catch(() => {
         listEl.replaceChildren(el("div", "error", "加载失败"));
@@ -829,6 +844,11 @@ function renderCompetitorDetail(page, saved) {
   const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
   analysis.id = "analysis";
   detailEl.append(analysis);
+  appendSourceBind(detailEl, {
+    linkedTable: "competitor_pages",
+    linkedId: page.id,
+    recordType: "competitor_page",
+  });
 }
 
 async function openCompetitor(id) {
@@ -1109,25 +1129,31 @@ function renderOpportunityDetail(card, saved) {
   detailEl.append(el("div", "headline", card.title || "--"));
   const meta = el("div", "meta");
   meta.append(el("span", null, card.verdict || "--"));
+  meta.append(el("span", "score", String(card.score)));
   meta.append(el("span", null, card.target_keyword || "--"));
   meta.append(el("span", null, card.page_type || "--"));
-  meta.append(el("span", "score", String(card.score)));
   meta.append(el("span", null, card.status || "--"));
   detailEl.append(meta);
-  [
-    ["用户意图", card.user_intent],
-    ["竞品摘要", card.competitor_summary],
-    ["产品切入角度", card.product_angle],
+  const lines = [
+    ["verdict_reason", card.verdict_reason],
+    ["keyword_score", card.keyword_score],
+    ["competitor_count", card.competitor_count],
+    ["best_competitor_score", card.best_competitor_score],
+    ["best_competitor_domain", card.best_competitor_domain],
     ["第一页计划", card.first_page_plan],
     ["7 天动作", card.seven_day_action],
     ["14 天动作", card.fourteen_day_action],
     ["30 天指标", card.thirty_day_metric],
     ["60 天止损线", card.sixty_day_stop_rule],
-    ["notes", card.notes],
-  ].forEach(([label, value]) => {
+  ];
+  if (!card.competitor_count && card.verdict_reason !== "竞品样本不足，当前只能 Research 或 Observe。") {
+    lines.unshift(["verdict_reason", "竞品样本不足，当前只能 Research 或 Observe。"]);
+  }
+  lines.forEach(([label, value]) => {
     const line = el("div", "meta-line");
     line.append(el("span", "k", label));
-    line.append(el("span", null, value || "--"));
+    const text = value === undefined || value === null || value === "" ? "--" : String(value);
+    line.append(el("span", null, text));
     detailEl.append(line);
   });
   const hint = el("div", "hint", existing ? "已有本地项目卡研判结果" : "");
@@ -1150,6 +1176,17 @@ function renderOpportunityDetail(card, saved) {
   const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
   analysis.id = "analysis";
   detailEl.append(analysis);
+  const evidence = el("div", "event-items");
+  evidence.id = "source-evidence";
+  evidence.append(el("div", "hint", "Source Evidence"));
+  detailEl.append(evidence);
+  loadSourceEvidence(card.id);
+  appendSourceBind(detailEl, {
+    linkedTable: "opportunity_cards",
+    linkedId: card.id,
+    recordType: "opportunity_card",
+    onSaved: () => loadSourceEvidence(card.id),
+  });
 }
 
 async function openOpportunity(id) {
@@ -1254,6 +1291,226 @@ async function runOpportunityAnalyze(id) {
   }
 }
 
+const SOURCE_TYPES = [
+  "news",
+  "google_trends",
+  "search_console",
+  "keyword_tool",
+  "site_traffic",
+  "new_site_growth",
+  "dr_growth",
+  "payment_ranking",
+  "serp",
+  "ai_search",
+  "manual",
+  "csv_import",
+];
+const SOURCE_GAP = "当前项目卡来源不足，仅作内部假设，不作为 Build 最终依据。";
+
+function renderSourceList() {
+  listEl.replaceChildren();
+  if (dataSources.length === 0) {
+    listEl.append(el("div", "empty", "NO SOURCE"));
+    return;
+  }
+  dataSources.forEach((source) => {
+    const row = el("div", selectedSourceId === source.id ? "item active" : "item");
+    row.append(el("div", "title", source.name || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", null, source.source_type || "--"));
+    meta.append(el("span", null, source.provider || "--"));
+    meta.append(el("span", null, source.region || "--"));
+    meta.append(el("span", null, source.time_range || "--"));
+    meta.append(el("span", null, source.enabled ? "enabled" : "off"));
+    row.append(meta);
+    row.dataset.id = String(source.id);
+    row.addEventListener("click", () => openSource(source.id));
+    listEl.append(row);
+  });
+}
+
+function renderSourceDetail(source) {
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "数据来源"));
+  detailEl.append(el("div", "headline", source.name || "--"));
+  [
+    ["source_type", source.source_type],
+    ["provider", source.provider],
+    ["region", source.region],
+    ["time_range", source.time_range],
+    ["enabled", source.enabled ? "enabled" : "off"],
+    ["notes", source.notes],
+  ].forEach(([label, value]) => {
+    const line = el("div", "meta-line");
+    line.append(el("span", "k", label));
+    line.append(el("span", null, value || "--"));
+    detailEl.append(line);
+  });
+}
+
+async function openSource(id) {
+  selectedSourceId = id;
+  selectedId = null;
+  selectedEventId = null;
+  selectedKeywordId = null;
+  selectedPageId = null;
+  selectedOpportunityId = null;
+  renderSourceList();
+  const source = dataSources.find((item) => item.id === id);
+  if (!source) {
+    detailEl.replaceChildren(el("div", "error", "数据源不存在"));
+    return;
+  }
+  renderSourceDetail(source);
+}
+
+async function loadSources() {
+  const response = await fetch("/api/sources");
+  if (!response.ok) throw new Error("sources");
+  dataSources = await response.json();
+  renderSourceList();
+}
+
+function showSourceForm() {
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "新增数据源"));
+  const form = el("form", "page-form");
+  const name = document.createElement("input");
+  name.required = true;
+  name.placeholder = "name";
+  const sourceType = document.createElement("select");
+  SOURCE_TYPES.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    sourceType.append(option);
+  });
+  sourceType.value = "manual";
+  const provider = document.createElement("input");
+  provider.placeholder = "provider";
+  const region = document.createElement("input");
+  region.placeholder = "region";
+  const timeRange = document.createElement("input");
+  timeRange.placeholder = "time_range";
+  const notes = document.createElement("textarea");
+  notes.placeholder = "notes";
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.textContent = "保存数据源";
+  [name, sourceType, provider, region, timeRange, notes, button].forEach((node) => form.append(node));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.value.trim(),
+          source_type: sourceType.value,
+          provider: provider.value.trim(),
+          region: region.value.trim(),
+          time_range: timeRange.value.trim(),
+          notes: notes.value.trim(),
+          enabled: 1,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        jobEl.textContent = "保存失败";
+        button.disabled = false;
+        return;
+      }
+      jobEl.textContent = `SOURCE ${data.id}`;
+      selectedSourceId = data.id;
+      await loadSources();
+      renderSourceDetail(data);
+    } catch (_error) {
+      jobEl.textContent = "保存失败";
+      button.disabled = false;
+    }
+  });
+  detailEl.append(form);
+}
+
+async function loadSourceEvidence(cardId) {
+  const box = document.getElementById("source-evidence");
+  if (!box) return;
+  box.replaceChildren(el("div", "hint", "Source Evidence"));
+  try {
+    const response = await fetch(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`);
+    const rows = await response.json();
+    if (!response.ok || !Array.isArray(rows) || rows.length === 0) {
+      box.append(el("div", "empty", SOURCE_GAP));
+      return;
+    }
+    rows.forEach((row) => {
+      const label = row.raw_ref || row.record_type || "record";
+      const from = row.source_name || row.provider || "未知来源";
+      box.append(el("div", "item", `${label} from ${from}`));
+    });
+  } catch (_error) {
+    box.append(el("div", "error", "来源加载失败"));
+  }
+}
+
+function appendSourceBind(host, options) {
+  const form = el("form", "page-form");
+  form.append(el("div", "hint", "绑定来源"));
+  const sourceSelect = document.createElement("select");
+  const rawRef = document.createElement("input");
+  rawRef.placeholder = "raw_ref";
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.textContent = "绑定来源";
+  form.append(sourceSelect, rawRef, button);
+  host.append(form);
+  fetch("/api/sources")
+    .then((response) => response.json())
+    .then((sources) => {
+      (Array.isArray(sources) ? sources : []).forEach((source) => {
+        const option = document.createElement("option");
+        option.value = String(source.id);
+        option.textContent = source.name;
+        sourceSelect.append(option);
+      });
+    })
+    .catch(() => {
+      sourceSelect.append(el("option", null, "来源加载失败"));
+    });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!sourceSelect.value) return;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/source-records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_id: Number(sourceSelect.value),
+          record_type: options.recordType,
+          linked_table: options.linkedTable,
+          linked_id: options.linkedId,
+          raw_ref: rawRef.value.trim(),
+          confidence: "manual",
+        }),
+      });
+      if (!response.ok) {
+        jobEl.textContent = "绑定失败";
+        button.disabled = false;
+        return;
+      }
+      jobEl.textContent = "来源已绑定";
+      rawRef.value = "";
+      if (options.onSaved) await options.onSaved();
+    } catch (_error) {
+      jobEl.textContent = "绑定失败";
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("api-trace").addEventListener("click", showTrace);
 document.getElementById("view-items").addEventListener("click", () => setView("items"));
@@ -1261,9 +1518,11 @@ document.getElementById("view-events").addEventListener("click", () => setView("
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));
 document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
+document.getElementById("view-sources").addEventListener("click", () => setView("sources"));
 document.getElementById("build-events").addEventListener("click", buildEventList);
 document.getElementById("seed-keywords").addEventListener("click", seedKeywordPool);
 document.getElementById("add-competitor").addEventListener("click", showCompetitorForm);
+document.getElementById("add-source").addEventListener("click", showSourceForm);
 refresh().catch(() => {
   listEl.replaceChildren(el("div", "error", "加载失败"));
 });

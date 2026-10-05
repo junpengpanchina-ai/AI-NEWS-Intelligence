@@ -212,6 +212,11 @@ def init_db() -> None:
                 score INTEGER,
                 status TEXT,
                 notes TEXT,
+                keyword_score INTEGER,
+                competitor_count INTEGER,
+                best_competitor_score INTEGER,
+                best_competitor_domain TEXT,
+                verdict_reason TEXT,
                 created_at TEXT,
                 updated_at TEXT
             );
@@ -224,6 +229,33 @@ def init_db() -> None:
                 elapsed_seconds INTEGER,
                 created_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS data_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                source_type TEXT,
+                provider TEXT,
+                url TEXT,
+                region TEXT,
+                time_range TEXT,
+                data_format TEXT,
+                credibility TEXT,
+                notes TEXT,
+                enabled INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS source_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER,
+                record_type TEXT,
+                linked_table TEXT,
+                linked_id INTEGER,
+                raw_ref TEXT,
+                confidence TEXT,
+                created_at TEXT
+            );
             """
         )
         conn.executemany(
@@ -233,9 +265,23 @@ def init_db() -> None:
             """,
             SOURCES,
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(opportunity_cards)")}
+        additions = {
+            "keyword_score": "INTEGER",
+            "competitor_count": "INTEGER",
+            "best_competitor_score": "INTEGER",
+            "best_competitor_domain": "TEXT",
+            "verdict_reason": "TEXT",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE opportunity_cards ADD COLUMN {name} {ddl}")
         conn.commit()
     finally:
         conn.close()
+    from app.ledger import seed_data_sources
+
+    seed_data_sources()
 
 
 def content_hash(title: str) -> str:
