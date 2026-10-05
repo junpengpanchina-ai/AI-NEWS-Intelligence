@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from html import unescape
 
@@ -8,6 +9,7 @@ import httpx
 
 from app.db import content_hash, insert_item, list_sources
 from app.scoring import compute_score
+from app.trace import record_trace
 
 logger = logging.getLogger("pj.collect")
 
@@ -72,10 +74,32 @@ def _build_item(
     }
 
 
+async def _fetch_feed(client: httpx.AsyncClient, url: str, name: str) -> httpx.Response:
+    started = time.perf_counter()
+    status_code = None
+    note = name
+    try:
+        response = await client.get(url)
+        status_code = response.status_code
+        return response
+    except Exception as exc:
+        note = f"{name} {exc.__class__.__name__}"
+        raise
+    finally:
+        record_trace(
+            "GET",
+            url,
+            status_code,
+            int((time.perf_counter() - started) * 1000),
+            "external_feed",
+            note,
+        )
+
+
 async def _fetch_hn(client: httpx.AsyncClient, source: dict) -> tuple[list[dict], list[str]]:
     name = source["name"]
     try:
-        response = await client.get(source["url"])
+        response = await _fetch_feed(client, source["url"], name)
         response.raise_for_status()
         ids = response.json()
         if not isinstance(ids, list):
@@ -161,7 +185,7 @@ def _entry_author(entry) -> str:
 async def _fetch_rss(client: httpx.AsyncClient, source: dict) -> tuple[list[dict], list[str]]:
     name = source["name"]
     try:
-        response = await client.get(source["url"])
+        response = await _fetch_feed(client, source["url"], name)
         response.raise_for_status()
         parsed = feedparser.parse(response.content)
     except Exception as exc:

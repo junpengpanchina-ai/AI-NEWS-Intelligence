@@ -2,8 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import time
 
 import httpx
+
+from app.trace import record_trace
 
 logger = logging.getLogger("pj.llm")
 
@@ -163,7 +166,7 @@ EVENT_SYSTEM_PROMPT = """你是一个商业情报分析员。下面是同一事�
 请用中文输出，不要夸张，不要空话。"""
 
 
-async def chat(system: str, user: str) -> tuple[str, str]:
+async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]:
     base, key, model = require_config()
     endpoint = build_chat_completions_url(base)
     payload = {
@@ -179,11 +182,47 @@ async def chat(system: str, user: str) -> tuple[str, str]:
     }
     logger.info("LLM_REQUEST_URL %s", endpoint)
     logger.info("LLM_MODEL %s", model)
-    logger.info("PROMPT_LENGTH %s", len(user))
-    async with httpx.AsyncClient(timeout=llm_timeout_seconds()) as client:
-        response = await _post(client, endpoint, payload, headers, model, key)
+    prompt_length = len(user)
+    logger.info("PROMPT_LENGTH %s", prompt_length)
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=llm_timeout_seconds()) as client:
+            response = await _post(client, endpoint, payload, headers, model, key)
+    except LLMCallError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        message = str(detail.get("message") or "")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        timed_out = "超时" in message
+        if trace_label == "competitor" and timed_out:
+            record_trace(
+                "POST",
+                endpoint,
+                "timeout",
+                elapsed_ms,
+                "llm",
+                f"competitor analyze timeout model={model} url={endpoint} prompt_length={prompt_length}",
+            )
+        else:
+            outcome = "timeout" if timed_out else f"LLM_STATUS_CODE {detail.get('status_code')}"
+            record_trace(
+                "POST",
+                endpoint,
+                "timeout" if timed_out else detail.get("status_code"),
+                elapsed_ms,
+                "llm",
+                f"LLM_REQUEST_URL {endpoint} LLM_MODEL {model} PROMPT_LENGTH {prompt_length} {outcome}",
+            )
+        raise
 
     safe_text = _redact(response.text or "", key)
+    record_trace(
+        "POST",
+        endpoint,
+        response.status_code,
+        int((time.perf_counter() - started) * 1000),
+        "llm",
+        f"LLM_REQUEST_URL {endpoint} LLM_MODEL {model} PROMPT_LENGTH {prompt_length} LLM_STATUS_CODE {response.status_code}",
+    )
     logger.info("LLM_STATUS_CODE %s", response.status_code)
     logger.info("LLM_RESPONSE_PREFIX %s", safe_text[:500])
 
@@ -247,3 +286,17 @@ KEYWORD_SYSTEM_PROMPT = """你是 Google To C 产品机会分析员。请基于�
 
 async def analyze_keyword(user_prompt: str) -> tuple[str, str]:
     return await chat(KEYWORD_SYSTEM_PROMPT, user_prompt)
+
+
+COMPETITOR_SYSTEM_PROMPT = "你是 Google To C 产品页面分析员。请用中文直接判断，不要空话。"
+
+
+async def analyze_competitor(user_prompt: str) -> tuple[str, str]:
+    return await chat(COMPETITOR_SYSTEM_PROMPT, user_prompt, trace_label="competitor")
+
+
+OPPORTUNITY_SYSTEM_PROMPT = "你是 Google To C 产品机会判断员。请用中文直接判断，不要空话。"
+
+
+async def analyze_opportunity(user_prompt: str) -> tuple[str, str]:
+    return await chat(OPPORTUNITY_SYSTEM_PROMPT, user_prompt)

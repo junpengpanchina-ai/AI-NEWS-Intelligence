@@ -163,6 +163,67 @@ def init_db() -> None:
                 elapsed_seconds INTEGER,
                 created_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS competitor_pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                url TEXT,
+                domain TEXT,
+                title TEXT,
+                h1 TEXT,
+                page_type TEXT,
+                target_keyword TEXT,
+                cta_text TEXT,
+                pricing_signal TEXT,
+                signup_signal TEXT,
+                payment_signal TEXT,
+                geo_signal TEXT,
+                copyability_score INTEGER,
+                risk_level TEXT,
+                notes TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS competitor_page_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                page_id INTEGER,
+                model TEXT,
+                analysis TEXT,
+                elapsed_seconds INTEGER,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS opportunity_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_id INTEGER,
+                title TEXT,
+                verdict TEXT,
+                target_keyword TEXT,
+                page_type TEXT,
+                user_intent TEXT,
+                competitor_summary TEXT,
+                product_angle TEXT,
+                first_page_plan TEXT,
+                seven_day_action TEXT,
+                fourteen_day_action TEXT,
+                thirty_day_metric TEXT,
+                sixty_day_stop_rule TEXT,
+                score INTEGER,
+                status TEXT,
+                notes TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS opportunity_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER,
+                model TEXT,
+                analysis TEXT,
+                elapsed_seconds INTEGER,
+                created_at TEXT
+            );
             """
         )
         conn.executemany(

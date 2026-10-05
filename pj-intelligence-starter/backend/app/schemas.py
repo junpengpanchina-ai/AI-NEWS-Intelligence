@@ -5,6 +5,16 @@ class HealthOut(BaseModel):
     status: str
 
 
+class TraceOut(BaseModel):
+    timestamp: str
+    method: str
+    path: str
+    status_code: int | str | None = None
+    elapsed_ms: int
+    kind: str
+    note: str = ""
+
+
 class CollectOut(BaseModel):
     inserted: int
     skipped: int
@@ -110,6 +120,82 @@ class KeywordSeedOut(BaseModel):
 class KeywordAnalysisOut(BaseModel):
     id: int
     cluster_id: int
+    model: str
+    analysis: str
+    elapsed_seconds: int | None = None
+    created_at: str
+
+
+class CompetitorIn(BaseModel):
+    cluster_id: int
+    url: str
+    title: str = ""
+    h1: str = ""
+    page_type: str
+    target_keyword: str = ""
+    cta_text: str = ""
+    pricing_signal: str = ""
+    signup_signal: str = ""
+    payment_signal: str = ""
+    geo_signal: str = ""
+    notes: str = ""
+
+
+class CompetitorOut(BaseModel):
+    id: int
+    cluster_id: int
+    url: str
+    domain: str
+    title: str
+    h1: str
+    page_type: str
+    target_keyword: str
+    cta_text: str
+    pricing_signal: str
+    signup_signal: str
+    payment_signal: str
+    geo_signal: str
+    copyability_score: int
+    risk_level: str
+    notes: str
+    created_at: str
+    updated_at: str
+
+
+class CompetitorAnalysisOut(BaseModel):
+    id: int
+    page_id: int
+    model: str
+    analysis: str
+    elapsed_seconds: int | None = None
+    created_at: str
+
+
+class OpportunityOut(BaseModel):
+    id: int
+    cluster_id: int
+    title: str
+    verdict: str
+    target_keyword: str
+    page_type: str
+    user_intent: str
+    competitor_summary: str
+    product_angle: str
+    first_page_plan: str
+    seven_day_action: str
+    fourteen_day_action: str
+    thirty_day_metric: str
+    sixty_day_stop_rule: str
+    score: int
+    status: str
+    notes: str
+    created_at: str
+    updated_at: str
+
+
+class OpportunityAnalysisOut(BaseModel):
+    id: int
+    card_id: int
     model: str
     analysis: str
     elapsed_seconds: int | None = None

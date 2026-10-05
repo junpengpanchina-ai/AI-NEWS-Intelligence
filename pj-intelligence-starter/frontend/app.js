@@ -10,9 +10,13 @@ const HIGH_SCORE = 60;
 let items = [];
 let events = [];
 let keywords = [];
+let competitors = [];
+let opportunities = [];
 let selectedId = null;
 let selectedEventId = null;
 let selectedKeywordId = null;
+let selectedPageId = null;
+let selectedOpportunityId = null;
 let viewMode = "items";
 let analyzeToken = 0;
 let timerId = null;
@@ -552,6 +556,12 @@ function renderKeywordDetail(cluster, keywordItems, saved) {
   detailEl.append(included);
 
   const actions = el("div", "actions");
+  const generate = document.createElement("button");
+  generate.id = "opportunity-generate";
+  generate.type = "button";
+  generate.textContent = "生成项目卡";
+  generate.addEventListener("click", () => generateOpportunity(cluster.id));
+  actions.append(generate);
   const button = document.createElement("button");
   button.id = "keyword-analyze";
   button.type = "button";
@@ -684,8 +694,11 @@ function setView(mode) {
   document.getElementById("view-items").classList.toggle("on", mode === "items");
   document.getElementById("view-events").classList.toggle("on", mode === "events");
   document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
+  document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
+  document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
   document.getElementById("build-events").hidden = mode !== "events";
   document.getElementById("seed-keywords").hidden = mode !== "keywords";
+  document.getElementById("add-competitor").hidden = mode !== "competitors";
   if (mode === "items") {
     renderList();
     detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
@@ -703,14 +716,269 @@ function setView(mode) {
       });
     return;
   }
-  detailEl.textContent = selectedKeywordId ? "加载中" : "选择一个关键词簇";
-  loadKeywords()
+  if (mode === "keywords") {
+    detailEl.textContent = selectedKeywordId ? "加载中" : "选择一个关键词簇";
+    loadKeywords()
+      .then(() => {
+        if (selectedKeywordId) return openKeyword(selectedKeywordId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
+    return;
+  }
+  if (mode === "opportunities") {
+    detailEl.textContent = selectedOpportunityId ? "加载中" : "选择一张项目卡";
+    loadOpportunities()
+      .then(() => {
+        if (selectedOpportunityId) return openOpportunity(selectedOpportunityId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
+    return;
+  }
+  detailEl.textContent = selectedPageId ? "加载中" : "选择一个竞品页面";
+  loadCompetitors()
     .then(() => {
-      if (selectedKeywordId) return openKeyword(selectedKeywordId);
+      if (selectedPageId) return openCompetitor(selectedPageId);
     })
     .catch(() => {
       listEl.replaceChildren(el("div", "error", "加载失败"));
     });
+}
+
+const PAGE_TYPES = ["tutorial", "comparison", "tool", "api_docs", "listicle", "template", "landing", "unknown"];
+
+function renderCompetitorList() {
+  listEl.replaceChildren();
+  if (competitors.length === 0) {
+    listEl.append(el("div", "empty", "NO PAGE"));
+    return;
+  }
+  competitors.forEach((page) => {
+    const row = el("div", selectedPageId === page.id ? "item active" : "item");
+    row.append(el("div", "title", page.title || page.domain || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", null, page.domain || "--"));
+    meta.append(el("span", null, page.page_type || "--"));
+    meta.append(el("span", null, page.target_keyword || "--"));
+    meta.append(el("span", "score", String(page.copyability_score)));
+    meta.append(el("span", null, page.risk_level || "--"));
+    row.append(meta);
+    row.dataset.id = String(page.id);
+    row.addEventListener("click", () => openCompetitor(page.id));
+    listEl.append(row);
+  });
+}
+
+function renderCompetitorDetail(page, saved) {
+  stopTimer();
+  const existing = Boolean(saved && saved.analysis);
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "竞品页面详情"));
+  detailEl.append(el("div", "headline", page.title || "--"));
+  const meta = el("div", "meta");
+  meta.append(el("span", null, page.domain || "--"));
+  meta.append(el("span", null, page.page_type || "--"));
+  meta.append(el("span", null, page.target_keyword || "--"));
+  meta.append(el("span", "score", String(page.copyability_score)));
+  meta.append(el("span", null, page.risk_level || "--"));
+  detailEl.append(meta);
+  [
+    ["URL", page.url],
+    ["H1", page.h1],
+    ["CTA", page.cta_text],
+    ["pricing_signal", page.pricing_signal],
+    ["signup_signal", page.signup_signal],
+    ["payment_signal", page.payment_signal],
+    ["geo_signal", page.geo_signal],
+    ["notes", page.notes],
+  ].forEach(([label, value]) => {
+    const line = el("div", "meta-line");
+    line.append(el("span", "k", label));
+    if (label === "URL" && value) {
+      const link = document.createElement("a");
+      link.href = value;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = value;
+      line.append(link);
+    } else {
+      line.append(el("span", null, value || "--"));
+    }
+    detailEl.append(line);
+  });
+  const hint = el("div", "hint", existing ? "已有本地竞品研判结果" : "");
+  hint.id = "saved-hint";
+  detailEl.append(hint);
+  const actions = el("div", "actions");
+  const button = document.createElement("button");
+  button.id = "competitor-analyze";
+  button.type = "button";
+  button.textContent = existing ? "重新研判竞品页面" : "AI 研判竞品页面";
+  button.addEventListener("click", () => runCompetitorAnalyze(page.id));
+  actions.append(button);
+  const elapsed = el("span", null, "");
+  elapsed.id = "elapsed";
+  actions.append(elapsed);
+  detailEl.append(actions);
+  const waitHint = el("div", "hint", "");
+  waitHint.id = "analyze-status";
+  detailEl.append(waitHint);
+  const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
+  analysis.id = "analysis";
+  detailEl.append(analysis);
+}
+
+async function openCompetitor(id) {
+  analyzeToken += 1;
+  selectedPageId = id;
+  selectedId = null;
+  selectedEventId = null;
+  selectedKeywordId = null;
+  renderCompetitorList();
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch(`/api/competitors/${id}`);
+    const page = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", page.detail || "加载失败"));
+      return;
+    }
+    let saved = null;
+    const analysisResponse = await fetch(`/api/competitor-analysis/${id}`);
+    if (analysisResponse.ok) saved = await analysisResponse.json();
+    renderCompetitorDetail(page, saved);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function loadCompetitors() {
+  const response = await fetch("/api/competitors");
+  if (!response.ok) throw new Error("competitors");
+  competitors = await response.json();
+  renderCompetitorList();
+}
+
+async function runCompetitorAnalyze(id) {
+  const token = ++analyzeToken;
+  const button = document.getElementById("competitor-analyze");
+  const box = document.getElementById("analysis");
+  const status = document.getElementById("analyze-status");
+  const elapsed = document.getElementById("elapsed");
+  const savedHint = document.getElementById("saved-hint");
+  if (!button || !box || !status || !elapsed) return;
+  const previousLabel = button.textContent === "重新研判竞品页面" ? "重新研判竞品页面" : "AI 研判竞品页面";
+  button.disabled = true;
+  button.textContent = "分析中...";
+  status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
+  startTimer(elapsed);
+  try {
+    const response = await fetch(`/api/competitors/${id}/analyze?type=fast`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (token !== analyzeToken) return;
+    if (!response.ok) {
+      const detail = data.detail;
+      const timedOut = detail && typeof detail === "object" && (
+        detail.timeout_seconds != null || String(detail.message || "").includes("超时")
+      );
+      box.className = "analysis error";
+      box.textContent = timedOut
+        ? "模型接口超时。本次没有写入分析结果，可以稍后重试，或先手动记录页面判断。"
+        : formatError(detail);
+      status.textContent = timedOut ? box.textContent : "";
+      button.textContent = previousLabel;
+      return;
+    }
+    if (savedHint) savedHint.textContent = "已有本地竞品研判结果";
+    status.textContent = "";
+    elapsed.textContent = "";
+    box.className = "analysis";
+    box.textContent = data.analysis || "";
+    button.textContent = "重新研判竞品页面";
+  } catch (_error) {
+    if (token !== analyzeToken) return;
+    box.className = "analysis error";
+    box.textContent = "研判失败";
+    button.textContent = previousLabel;
+  } finally {
+    if (token === analyzeToken) {
+      stopTimer();
+      button.disabled = false;
+    }
+  }
+}
+
+async function showCompetitorForm() {
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "新增竞品页面"));
+  const form = document.createElement("form");
+  form.className = "page-form";
+  let clusterOptions = `<option value="">选择关键词簇</option>`;
+  try {
+    const response = await fetch("/api/keywords");
+    if (response.ok) {
+      const clusters = await response.json();
+      clusterOptions += clusters.map((cluster) => {
+        const name = String(cluster.name || "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[char]));
+        return `<option value="${Number(cluster.id)}">${Number(cluster.id)} ${name}</option>`;
+      }).join("");
+    }
+  } catch (_error) {
+    clusterOptions = `<option value="">关键词簇加载失败</option>`;
+  }
+  const typeOptions = PAGE_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("");
+  form.innerHTML = `
+    <label>cluster_id<select name="cluster_id">${clusterOptions}</select></label>
+    <label>url<input name="url" required></label>
+    <label>title<input name="title"></label>
+    <label>h1<input name="h1"></label>
+    <label>page_type<select name="page_type">${typeOptions}</select></label>
+    <label>target_keyword<input name="target_keyword"></label>
+    <label>cta_text<input name="cta_text"></label>
+    <label>pricing_signal<input name="pricing_signal"></label>
+    <label>signup_signal<input name="signup_signal"></label>
+    <label>payment_signal<input name="payment_signal"></label>
+    <label>geo_signal<input name="geo_signal"></label>
+    <label>notes<textarea name="notes" rows="3"></textarea></label>
+    <button type="submit">保存竞品页面</button>
+  `;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = Object.fromEntries(new FormData(form).entries());
+    body.cluster_id = Number(body.cluster_id);
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/competitors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        jobEl.textContent = "保存失败";
+        button.disabled = false;
+        return;
+      }
+      jobEl.textContent = `PAGE ${data.id} SCORE ${data.copyability_score}`;
+      selectedPageId = data.id;
+      await loadCompetitors();
+      await openCompetitor(data.id);
+    } catch (_error) {
+      jobEl.textContent = "保存失败";
+      button.disabled = false;
+    }
+  });
+  detailEl.append(form);
 }
 
 async function buildEventList() {
@@ -763,12 +1031,239 @@ async function runCollect() {
   }
 }
 
+function traceCell(text) {
+  return el("span", null, text == null || text === "" ? "--" : String(text));
+}
+
+async function showTrace() {
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch("/api/debug/trace");
+    const rows = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", "加载失败"));
+      return;
+    }
+    detailEl.replaceChildren();
+    const actions = el("div", "actions");
+    actions.append(el("div", "hint", "API Trace"));
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.textContent = "清空记录";
+    clearButton.addEventListener("click", async () => {
+      await fetch("/api/debug/trace", { method: "DELETE" });
+      showTrace();
+    });
+    actions.append(clearButton);
+    detailEl.append(actions);
+    const head = el("div", "trace-row trace-head");
+    ["时间", "方法", "路径", "状态", "耗时", "类型", "备注"].forEach((label) => head.append(traceCell(label)));
+    detailEl.append(head);
+    if (!rows.length) {
+      detailEl.append(el("div", "empty", "NO TRACE"));
+      return;
+    }
+    rows.forEach((row) => {
+      const line = el("div", "trace-row");
+      line.append(traceCell(formatTime(row.timestamp)));
+      line.append(traceCell(row.method));
+      line.append(traceCell(row.path));
+      line.append(traceCell(row.status_code));
+      line.append(traceCell(row.elapsed_ms == null ? "--" : `${row.elapsed_ms}ms`));
+      line.append(traceCell(row.kind));
+      line.append(traceCell(row.note));
+      detailEl.append(line);
+    });
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+function renderOpportunityList() {
+  listEl.replaceChildren();
+  if (opportunities.length === 0) {
+    listEl.append(el("div", "empty", "NO CARD"));
+    return;
+  }
+  opportunities.forEach((card) => {
+    const row = el("div", selectedOpportunityId === card.id ? "item active" : "item");
+    row.append(el("div", "title", card.title || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", null, card.verdict || "--"));
+    meta.append(el("span", null, card.target_keyword || "--"));
+    meta.append(el("span", null, card.page_type || "--"));
+    meta.append(el("span", "score", String(card.score)));
+    meta.append(el("span", null, card.status || "--"));
+    row.append(meta);
+    row.dataset.id = String(card.id);
+    row.addEventListener("click", () => openOpportunity(card.id));
+    listEl.append(row);
+  });
+}
+
+function renderOpportunityDetail(card, saved) {
+  stopTimer();
+  const existing = Boolean(saved && saved.analysis);
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "项目卡详情"));
+  detailEl.append(el("div", "headline", card.title || "--"));
+  const meta = el("div", "meta");
+  meta.append(el("span", null, card.verdict || "--"));
+  meta.append(el("span", null, card.target_keyword || "--"));
+  meta.append(el("span", null, card.page_type || "--"));
+  meta.append(el("span", "score", String(card.score)));
+  meta.append(el("span", null, card.status || "--"));
+  detailEl.append(meta);
+  [
+    ["用户意图", card.user_intent],
+    ["竞品摘要", card.competitor_summary],
+    ["产品切入角度", card.product_angle],
+    ["第一页计划", card.first_page_plan],
+    ["7 天动作", card.seven_day_action],
+    ["14 天动作", card.fourteen_day_action],
+    ["30 天指标", card.thirty_day_metric],
+    ["60 天止损线", card.sixty_day_stop_rule],
+    ["notes", card.notes],
+  ].forEach(([label, value]) => {
+    const line = el("div", "meta-line");
+    line.append(el("span", "k", label));
+    line.append(el("span", null, value || "--"));
+    detailEl.append(line);
+  });
+  const hint = el("div", "hint", existing ? "已有本地项目卡研判结果" : "");
+  hint.id = "saved-hint";
+  detailEl.append(hint);
+  const actions = el("div", "actions");
+  const button = document.createElement("button");
+  button.id = "opportunity-analyze";
+  button.type = "button";
+  button.textContent = existing ? "重新研判项目卡" : "AI 研判项目卡";
+  button.addEventListener("click", () => runOpportunityAnalyze(card.id));
+  actions.append(button);
+  const elapsed = el("span", null, "");
+  elapsed.id = "elapsed";
+  actions.append(elapsed);
+  detailEl.append(actions);
+  const waitHint = el("div", "hint", "");
+  waitHint.id = "analyze-status";
+  detailEl.append(waitHint);
+  const analysis = el("pre", "analysis", existing ? (saved.analysis || "") : "");
+  analysis.id = "analysis";
+  detailEl.append(analysis);
+}
+
+async function openOpportunity(id) {
+  analyzeToken += 1;
+  selectedOpportunityId = id;
+  selectedId = null;
+  selectedEventId = null;
+  selectedKeywordId = null;
+  selectedPageId = null;
+  renderOpportunityList();
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch(`/api/opportunities/${id}`);
+    const card = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", card.detail || "加载失败"));
+      return;
+    }
+    let saved = null;
+    const analysisResponse = await fetch(`/api/opportunity-analysis/${id}`);
+    if (analysisResponse.ok) saved = await analysisResponse.json();
+    renderOpportunityDetail(card, saved);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function loadOpportunities() {
+  const response = await fetch("/api/opportunities");
+  if (!response.ok) throw new Error("opportunities");
+  opportunities = await response.json();
+  renderOpportunityList();
+}
+
+async function generateOpportunity(clusterId) {
+  const button = document.getElementById("opportunity-generate");
+  if (button) button.disabled = true;
+  jobEl.textContent = "生成项目卡";
+  try {
+    const response = await fetch(`/api/opportunities/from-keyword/${clusterId}`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      jobEl.textContent = "生成失败";
+      return;
+    }
+    selectedOpportunityId = data.id;
+    jobEl.textContent = `CARD ${data.id} ${data.verdict}`;
+    setView("opportunities");
+  } catch (_error) {
+    jobEl.textContent = "生成失败";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function runOpportunityAnalyze(id) {
+  const token = ++analyzeToken;
+  const button = document.getElementById("opportunity-analyze");
+  const box = document.getElementById("analysis");
+  const status = document.getElementById("analyze-status");
+  const elapsed = document.getElementById("elapsed");
+  const savedHint = document.getElementById("saved-hint");
+  if (!button || !box || !status || !elapsed) return;
+  const previousLabel = button.textContent === "重新研判项目卡" ? "重新研判项目卡" : "AI 研判项目卡";
+  button.disabled = true;
+  button.textContent = "分析中...";
+  status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
+  startTimer(elapsed);
+  try {
+    const response = await fetch(`/api/opportunities/${id}/analyze`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (token !== analyzeToken) return;
+    if (!response.ok) {
+      const detail = data.detail;
+      const timedOut = detail && typeof detail === "object" && (
+        detail.timeout_seconds != null || String(detail.message || "").includes("超时")
+      );
+      box.className = "analysis error";
+      box.textContent = timedOut
+        ? "模型接口超时。本次没有写入分析结果，可以稍后重试。"
+        : formatError(detail);
+      status.textContent = timedOut ? box.textContent : "";
+      button.textContent = previousLabel;
+      return;
+    }
+    if (savedHint) savedHint.textContent = "已有本地项目卡研判结果";
+    status.textContent = "";
+    elapsed.textContent = "";
+    box.className = "analysis";
+    box.textContent = data.analysis || "";
+    button.textContent = "重新研判项目卡";
+  } catch (_error) {
+    if (token !== analyzeToken) return;
+    box.className = "analysis error";
+    box.textContent = "研判失败";
+    button.textContent = previousLabel;
+  } finally {
+    if (token === analyzeToken) {
+      stopTimer();
+      button.disabled = false;
+    }
+  }
+}
+
 collectBtn.addEventListener("click", runCollect);
+document.getElementById("api-trace").addEventListener("click", showTrace);
 document.getElementById("view-items").addEventListener("click", () => setView("items"));
 document.getElementById("view-events").addEventListener("click", () => setView("events"));
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
+document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));
+document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
 document.getElementById("build-events").addEventListener("click", buildEventList);
 document.getElementById("seed-keywords").addEventListener("click", seedKeywordPool);
+document.getElementById("add-competitor").addEventListener("click", showCompetitorForm);
 refresh().catch(() => {
   listEl.replaceChildren(el("div", "error", "加载失败"));
 });

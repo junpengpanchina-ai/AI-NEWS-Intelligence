@@ -70,6 +70,24 @@ header {
   color: var(--dim);
 }
 
+.trace-row {
+  display: grid;
+  grid-template-columns: 92px 52px minmax(0, 1.4fr) 48px 64px 88px minmax(0, 1.6fr);
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+}
+
+.trace-row b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.trace-head {
+  color: var(--amber);
+}
+
 button {
   background: transparent;
   color: var(--green);
@@ -133,14 +151,19 @@ h2 {
 
 .switch {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
 .switch button,
 #build-events,
 #seed-keywords,
+#add-competitor,
 #event-analyze,
-#keyword-analyze {
+#keyword-analyze,
+#competitor-analyze,
+#opportunity-analyze,
+#opportunity-generate {
   white-space: nowrap;
 }
 
@@ -150,8 +173,31 @@ h2 {
 }
 
 #build-events,
-#seed-keywords {
+#seed-keywords,
+#add-competitor {
   margin-left: auto;
+}
+
+.page-form {
+  display: grid;
+  gap: 8px;
+}
+
+.page-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--dim);
+}
+
+.page-form input,
+.page-form select,
+.page-form textarea {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  font: inherit;
+  padding: 6px;
 }
 
 .event-items {

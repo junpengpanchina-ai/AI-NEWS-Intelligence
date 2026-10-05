@@ -3,7 +3,7 @@ import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 
 from app.crawler import collect
@@ -25,6 +25,14 @@ from app.events import (
     list_events,
     save_event_analysis,
 )
+from app.competitors import (
+    competitor_prompt,
+    create_competitor,
+    get_competitor,
+    get_competitor_analysis,
+    list_competitors,
+    save_competitor_analysis,
+)
 from app.keywords import (
     get_keyword_analysis,
     get_keyword_cluster,
@@ -38,10 +46,22 @@ from app.llm import (
     LLMConfigError,
     analyze,
     analyze_event,
+    analyze_competitor,
     analyze_keyword,
+    analyze_opportunity,
+    chat,
     daily_limit,
     require_config,
 )
+from app.opportunities import (
+    create_opportunity_from_keyword,
+    get_opportunity,
+    get_opportunity_analysis,
+    list_opportunities,
+    opportunity_prompt,
+    save_opportunity_analysis,
+)
+from app.trace import clear_traces, list_traces, record_trace
 from app.schemas import (
     AnalysisOut,
     BuildEventsOut,
@@ -51,10 +71,16 @@ from app.schemas import (
     EventOut,
     HealthOut,
     ItemOut,
+    TraceOut,
+    CompetitorAnalysisOut,
+    CompetitorIn,
+    CompetitorOut,
     KeywordAnalysisOut,
     KeywordClusterOut,
     KeywordDetailOut,
     KeywordSeedOut,
+    OpportunityAnalysisOut,
+    OpportunityOut,
 )
 
 load_dotenv(project_root() / ".env")
@@ -68,6 +94,39 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="PJ Intelligence", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def remember_api(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path.startswith("/api/debug/"):
+        return await call_next(request)
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        record_trace(
+            request.method,
+            path,
+            status_code,
+            int((time.perf_counter() - started) * 1000),
+            "local_api",
+            "",
+        )
+
+
+@app.get("/api/debug/trace", response_model=list[TraceOut])
+def debug_trace():
+    return list_traces()
+
+
+@app.delete("/api/debug/trace")
+def debug_trace_clear():
+    clear_traces()
+    return {"cleared": True}
 
 
 @app.get("/api/health", response_model=HealthOut)
@@ -249,6 +308,164 @@ async def analyze_keyword_cluster(cluster_id: int):
 
     elapsed_seconds = max(0, int(round(time.monotonic() - started)))
     return save_keyword_analysis(cluster_id, model, text, elapsed_seconds)
+
+
+@app.get("/api/competitors", response_model=list[CompetitorOut])
+def competitors(cluster_id: int | None = None):
+    return list_competitors(cluster_id)
+
+
+@app.post("/api/competitors", response_model=CompetitorOut)
+def add_competitor(payload: CompetitorIn):
+    try:
+        page = create_competitor(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if page is None:
+        raise HTTPException(status_code=404, detail="关键词簇不存在")
+    return page
+
+
+@app.get("/api/competitors/{page_id}", response_model=CompetitorOut)
+def competitor_detail(page_id: int):
+    page = get_competitor(page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="竞品页面不存在")
+    return page
+
+
+@app.get("/api/competitor-analysis/{page_id}", response_model=CompetitorAnalysisOut)
+def competitor_analysis(page_id: int):
+    if get_competitor(page_id) is None:
+        raise HTTPException(status_code=404, detail="竞品页面不存在")
+    row = get_competitor_analysis(page_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="暂无分析")
+    return row
+
+
+@app.post("/api/debug/llm-smoke")
+async def llm_smoke():
+    try:
+        require_config()
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    limit = daily_limit()
+    if not reserve_quota(limit):
+        raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
+    started = time.perf_counter()
+    try:
+        model, text = await chat("请只按用户要求回复。", "用中文回复：LLM OK")
+    except LLMConfigError as exc:
+        release_quota()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except Exception:
+        release_quota()
+        raise
+    return {
+        "status": "ok",
+        "model": model,
+        "elapsed_ms": int((time.perf_counter() - started) * 1000),
+        "content": text,
+    }
+
+
+@app.post("/api/competitors/{page_id}/analyze", response_model=CompetitorAnalysisOut)
+async def analyze_competitor_page(page_id: int, type: str = "fast"):
+    page = get_competitor(page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="竞品页面不存在")
+    if type != "fast":
+        raise HTTPException(status_code=400, detail="仅支持 type=fast")
+    try:
+        require_config()
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limit = daily_limit()
+    if not reserve_quota(limit):
+        raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
+
+    started = time.monotonic()
+    try:
+        model, text = await analyze_competitor(competitor_prompt(page))
+    except LLMConfigError as exc:
+        release_quota()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except Exception:
+        release_quota()
+        raise
+
+    elapsed_seconds = max(0, int(round(time.monotonic() - started)))
+    return save_competitor_analysis(page_id, model, text, elapsed_seconds)
+
+
+@app.get("/api/opportunities", response_model=list[OpportunityOut])
+def opportunities():
+    return list_opportunities()
+
+
+@app.post("/api/opportunities/from-keyword/{cluster_id}", response_model=OpportunityOut)
+def opportunity_from_keyword(cluster_id: int):
+    card = create_opportunity_from_keyword(cluster_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="关键词簇不存在")
+    return card
+
+
+@app.get("/api/opportunities/{card_id}", response_model=OpportunityOut)
+def opportunity_detail(card_id: int):
+    card = get_opportunity(card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="项目卡不存在")
+    return card
+
+
+@app.get("/api/opportunity-analysis/{card_id}", response_model=OpportunityAnalysisOut)
+def opportunity_analysis(card_id: int):
+    if get_opportunity(card_id) is None:
+        raise HTTPException(status_code=404, detail="项目卡不存在")
+    row = get_opportunity_analysis(card_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="暂无分析")
+    return row
+
+
+@app.post("/api/opportunities/{card_id}/analyze", response_model=OpportunityAnalysisOut)
+async def analyze_opportunity_card(card_id: int):
+    card = get_opportunity(card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="项目卡不存在")
+    try:
+        require_config()
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limit = daily_limit()
+    if not reserve_quota(limit):
+        raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
+
+    started = time.monotonic()
+    try:
+        model, text = await analyze_opportunity(opportunity_prompt(card))
+    except LLMConfigError as exc:
+        release_quota()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LLMCallError as exc:
+        release_quota()
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    except Exception:
+        release_quota()
+        raise
+
+    elapsed_seconds = max(0, int(round(time.monotonic() - started)))
+    return save_opportunity_analysis(card_id, model, text, elapsed_seconds)
 
 
 @app.get("/api/analysis/{item_id}", response_model=AnalysisOut)
