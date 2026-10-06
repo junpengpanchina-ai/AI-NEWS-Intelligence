@@ -35,6 +35,18 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_item_columns(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_items)")}
+    for name, ddl in (
+        ("source_type", "TEXT"),
+        ("domain", "TEXT"),
+        ("tags", "TEXT"),
+        ("raw_json", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE raw_items ADD COLUMN {name} {ddl}")
+
+
 def init_db() -> None:
     conn = connect()
     try:
@@ -288,6 +300,39 @@ def init_db() -> None:
                 created_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS intelligence_feed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feed_type TEXT,
+                title TEXT,
+                domain TEXT,
+                url TEXT,
+                source_name TEXT,
+                signal TEXT,
+                why_it_matters TEXT,
+                related_keyword TEXT,
+                related_opportunity_id INTEGER,
+                created_at TEXT,
+                dedupe_key TEXT UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS source_runs (
+                source_name TEXT PRIMARY KEY,
+                last_run_at TEXT,
+                last_status TEXT,
+                records_collected INTEGER,
+                error_message TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS collect_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finished_at TEXT,
+                sources_checked INTEGER,
+                new_items INTEGER,
+                error_count INTEGER,
+                top_signal TEXT,
+                errors_json TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS import_batches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 preview_id TEXT,
@@ -305,8 +350,10 @@ def init_db() -> None:
             INSERT OR IGNORE INTO sources (name, type, url, weight, enabled)
             VALUES (?, ?, ?, ?, ?)
             """,
-            SOURCES,
+            SOURCES + [("GitHub Trending", "github", "https://github.com/trending", 2, 1)],
         )
+        _ensure_item_columns(conn)
+        conn.commit()
         columns = {row[1] for row in conn.execute("PRAGMA table_info(opportunity_cards)")}
         additions = {
             "keyword_score": "INTEGER",
@@ -368,8 +415,9 @@ def insert_item(item: dict) -> bool:
             """
             INSERT INTO raw_items (
                 source_name, title, url, summary, author,
-                published_at, fetched_at, content_hash, score, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                published_at, fetched_at, content_hash, score, status,
+                source_type, domain, tags, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item["source_name"],
@@ -382,6 +430,10 @@ def insert_item(item: dict) -> bool:
                 item["content_hash"],
                 int(item["score"]),
                 item.get("status") or "new",
+                item.get("source_type") or "",
+                item.get("domain") or "",
+                item.get("tags") or "",
+                item.get("raw_json") or "",
             ),
         )
         conn.commit()

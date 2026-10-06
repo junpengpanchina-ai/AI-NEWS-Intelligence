@@ -58,6 +58,11 @@ header {
   margin-left: auto;
 }
 
+.collect-status {
+  color: var(--dim);
+  line-height: 1.4;
+}
+
 .admin-nav {
   display: flex;
   align-items: center;
@@ -145,9 +150,21 @@ body[data-focus="work"] #signals {
   overflow: auto;
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(340px, 1.35fr);
-  grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr);
+  grid-template-rows: auto;
   gap: 12px;
   padding: 14px;
+}
+
+body[data-screen="board"] #workspace {
+  display: none;
+}
+
+body[data-screen="board"] #cockpit {
+  display: block;
+}
+
+.dash-wide {
+  grid-column: 1 / -1;
 }
 
 .deck {
@@ -241,6 +258,73 @@ body[data-focus="work"] #signals {
 #intake-files,
 #intake-folder {
   display: none;
+}
+
+.filter-bar,
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 12px;
+}
+
+.filter-bar input,
+.filter-bar select,
+.pager button,
+.filter-bar button {
+  background: #101410;
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.data-scroll {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.data-table tr {
+  cursor: pointer;
+}
+
+.raw-block {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 8px 0 0;
+  color: var(--dim);
+}
+
+.feed-line {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mini-tag {
+  color: var(--green);
+  border: 1px solid #314328;
+  padding: 1px 6px;
 }
 
 .sample-tag {

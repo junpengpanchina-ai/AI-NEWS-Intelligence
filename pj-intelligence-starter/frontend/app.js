@@ -24,6 +24,17 @@ let selectedImportId = null;
 let viewMode = "dashboard";
 let dashboardOpportunityId = null;
 let evidenceStats = { groups: [], record_types: [] };
+let dashboardLatest = { items: [] };
+let dashboardExternal = { items: [] };
+let dashboardFeed = { items: [] };
+let dashboardRanks = { payment: [], traffic: [], authority: [] };
+let collectStatus = { finished_at: "", sources_checked: 0, new_items: 0, error_count: 0, top_signal: "" };
+let explorerQuery = { dataset_type: "", record_type: "", provider: "", batch_id: "", period_month: "", domain: "", keyword: "", source_name: "", offset: 0 };
+let explorerPage = { total: 0, limit: 50, offset: 0, items: [] };
+let explorerOpenId = null;
+let externalQuery = { min_score: "", evidence_type: "", domain: "", offset: 0 };
+let externalPage = { total: 0, limit: 50, offset: 0, items: [] };
+let selectedBatchId = null;
 let dashboardFeeds = {
   imports: [],
   serp: [],
@@ -732,10 +743,14 @@ const EVIDENCE_GAP = "证据不足：当前只能作为 Research / Observe，不
 function applyChrome(mode) {
   const admin = ADMIN_MODES.includes(mode);
   const focused = mode === "opportunities" || mode === "keywords" || mode === "competitors";
-  document.body.dataset.screen = mode === "dashboard" ? "dashboard" : "workspace";
+  const board = mode === "explorer" || mode === "external" || mode === "feed";
+  document.body.dataset.screen = mode === "dashboard" ? "dashboard" : board ? "board" : "workspace";
   document.body.dataset.focus = focused ? "work" : "admin";
   document.getElementById("admin-nav").hidden = !admin;
   document.getElementById("view-dashboard").classList.toggle("on", mode === "dashboard");
+  document.getElementById("view-feed").classList.toggle("on", mode === "feed");
+  document.getElementById("view-explorer").classList.toggle("on", mode === "explorer");
+  document.getElementById("view-external").classList.toggle("on", mode === "external");
   document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
   document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
@@ -1150,7 +1165,7 @@ function renderDashboard() {
   if (pages.length) {
     summary.append(el("p", "copy-line", `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`));
   }
-  root.append(summary);
+  root.append(renderFeedCard(), renderExternalTopCard(), renderCoverageCard(), renderRankCard(), renderLatestCard());
 
   const holes = el("div", "slot-grid");
   holes.id = "evidence-holes";
@@ -1201,6 +1216,7 @@ function renderDashboard() {
     queue.append(row);
   });
   root.append(queue);
+  root.append(summary);
 
   const evidence = el("section", "cockpit-card");
   evidence.id = "dash-evidence";
@@ -1288,18 +1304,39 @@ async function loadEvidenceStats() {
   }
 }
 
+async function loadJsonObject(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes, stats] = await Promise.all([
+  const [oppRes, kwRes, compRes, stats, latest, external, feed, ranks, status] = await Promise.all([
     fetch("/api/opportunities"),
     fetch("/api/keywords"),
     fetch("/api/competitors"),
     loadEvidenceStats(),
+    loadJsonObject("/api/explorer/records?limit=10"),
+    loadJsonObject("/api/external-opportunities?limit=10"),
+    loadJsonObject("/api/intelligence/feed?limit=20"),
+    loadJsonObject("/api/dashboard/ranks?limit=10"),
+    loadJsonObject("/api/intake/collect-status"),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
   keywords = await kwRes.json();
   competitors = await compRes.json();
   evidenceStats = stats;
+  dashboardLatest = latest && Array.isArray(latest.items) ? latest : { items: [] };
+  dashboardExternal = external && Array.isArray(external.items) ? external : { items: [] };
+  dashboardFeed = feed && Array.isArray(feed.items) ? feed : { items: [] };
+  dashboardRanks = ranks && Array.isArray(ranks.payment) ? ranks : { payment: [], traffic: [], authority: [] };
+  collectStatus = status || collectStatus;
+  renderCollectStatus();
   dashboardFeeds = { imports: [], serp: [], payment: [], traffic: [], keywords: [], crawl: [], authority: [], validation: [] };
   if (viewMode === "dashboard") renderDashboard();
 }
@@ -1311,6 +1348,27 @@ function setView(mode) {
     loadDashboard().catch(() => {
       const root = document.getElementById("cockpit");
       if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
+    });
+    return;
+  }
+  if (mode === "explorer") {
+    loadExplorer().catch(() => {
+      const root = document.getElementById("cockpit");
+      if (root) root.replaceChildren(el("div", "error", "Data Explorer 加载失败"));
+    });
+    return;
+  }
+  if (mode === "external") {
+    loadExternal().catch(() => {
+      const root = document.getElementById("cockpit");
+      if (root) root.replaceChildren(el("div", "error", "External Opportunities 加载失败"));
+    });
+    return;
+  }
+  if (mode === "feed") {
+    loadFeedPage().catch(() => {
+      const root = document.getElementById("cockpit");
+      if (root) root.replaceChildren(el("div", "error", "Feed 加载失败"));
     });
     return;
   }
@@ -1677,22 +1735,34 @@ async function refresh() {
 }
 
 async function runCollect() {
+  const headerCollect = document.getElementById("collect-now");
   collectBtn.disabled = true;
+  if (headerCollect) headerCollect.disabled = true;
   jobEl.textContent = "采集中";
   try {
-    const response = await fetch("/api/collect", { method: "POST" });
+    const response = await fetch("/api/intake/collect-now", { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       jobEl.textContent = "采集失败";
       return;
     }
     const errorCount = Array.isArray(data.errors) ? data.errors.length : 0;
-    jobEl.textContent = `+${data.inserted}  SKIP ${data.skipped}${errorCount ? `  ERR ${errorCount}` : ""}`;
-    await refresh();
+    jobEl.textContent = `+${data.new_items || data.inserted || 0}  SKIP ${data.skipped || 0}${errorCount ? `  ERR ${errorCount}` : ""}`;
+    collectStatus = {
+      finished_at: data.finished_at || "",
+      sources_checked: data.sources_checked || 0,
+      new_items: data.new_items || 0,
+      error_count: errorCount,
+      top_signal: data.top_signal || "",
+    };
+    renderCollectStatus();
+    if (viewMode === "dashboard" || viewMode === "feed") await loadDashboard();
+    else await refresh();
   } catch (_error) {
     jobEl.textContent = "采集失败";
   } finally {
     collectBtn.disabled = false;
+    if (headerCollect) headerCollect.disabled = false;
   }
 }
 
@@ -1979,6 +2049,11 @@ async function runOpportunityAnalyze(id) {
 
 const SOURCE_TYPES = [
   "news",
+  "rss",
+  "website",
+  "product_hunt",
+  "hacker_news",
+  "github",
   "google_trends",
   "search_console",
   "keyword_tool",
@@ -2018,6 +2093,8 @@ function renderSourceList() {
     meta.append(el("span", null, source.region || "--"));
     meta.append(el("span", null, source.time_range || "--"));
     meta.append(el("span", null, source.enabled ? "enabled" : "off"));
+    meta.append(el("span", null, source.last_status || "missing"));
+    meta.append(el("span", null, String(source.records_collected || 0)));
     row.append(meta);
     row.dataset.id = String(source.id);
     row.addEventListener("click", () => openSource(source.id));
@@ -2080,7 +2157,12 @@ function renderSourceDetail(source) {
     ["provider", source.provider],
     ["region", source.region],
     ["time_range", source.time_range],
+    ["url", source.url],
     ["enabled", source.enabled ? "enabled" : "off"],
+    ["last_run_at", source.last_run_at],
+    ["last_status", source.last_status],
+    ["records_collected", String(source.records_collected || 0)],
+    ["error_message", source.error_message],
     ["notes", source.notes],
   ].forEach(([label, value]) => {
     const line = el("div", "meta-line");
@@ -2088,6 +2170,73 @@ function renderSourceDetail(source) {
     line.append(el("span", null, value || "--"));
     detailEl.append(line);
   });
+  const actions = el("div", "filter-bar");
+  const run = el("button", null, "Run");
+  run.type = "button";
+  run.addEventListener("click", () => runSource(source.id, run));
+  const toggle = el("button", null, source.enabled ? "Disable" : "Enable");
+  toggle.type = "button";
+  toggle.addEventListener("click", () => toggleSource(source, toggle));
+  const view = el("button", null, "View records");
+  view.type = "button";
+  view.addEventListener("click", () => viewSourceRecords(source.id));
+  actions.append(run, toggle, view);
+  detailEl.append(actions);
+  const records = el("div");
+  records.id = "source-records";
+  detailEl.append(records);
+}
+
+async function runSource(sourceId, button) {
+  button.disabled = true;
+  jobEl.textContent = "采集来源";
+  try {
+    const response = await fetch(`/api/sources/${sourceId}/run`, { method: "POST" });
+    const data = await response.json();
+    jobEl.textContent = response.ok ? `${data.status} +${data.records_collected || 0}` : (data.detail || "采集失败");
+    await loadSources();
+    await openSource(sourceId);
+  } catch (_error) {
+    jobEl.textContent = "采集失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function toggleSource(source, button) {
+  button.disabled = true;
+  const enabled = source.enabled ? 0 : 1;
+  try {
+    const response = await fetch(`/api/sources/${source.id}/enabled?enabled=${enabled}`, { method: "POST" });
+    if (!response.ok) {
+      jobEl.textContent = "更新失败";
+      return;
+    }
+    await loadSources();
+    await openSource(source.id);
+  } catch (_error) {
+    jobEl.textContent = "更新失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function viewSourceRecords(sourceId) {
+  const box = document.getElementById("source-records");
+  if (!box) return;
+  box.replaceChildren(el("div", "hint", "加载记录"));
+  try {
+    const response = await fetch(`/api/sources/${sourceId}/records`);
+    const rows = await response.json();
+    if (!response.ok || !Array.isArray(rows) || !rows.length) {
+      box.replaceChildren(el("div", "empty", "这个来源还没有采集记录"));
+      return;
+    }
+    box.replaceChildren();
+    rows.forEach((row) => box.append(el("div", "clamp", `${row.title || "--"} · ${row.domain || "--"} · ${row.url || "--"}`)));
+  } catch (_error) {
+    box.replaceChildren(el("div", "error", "记录加载失败"));
+  }
 }
 
 async function openSource(id) {
@@ -2133,6 +2282,8 @@ function showSourceForm() {
   sourceType.value = "manual";
   const provider = document.createElement("input");
   provider.placeholder = "provider";
+  const url = document.createElement("input");
+  url.placeholder = "url";
   const region = document.createElement("input");
   region.placeholder = "region";
   const timeRange = document.createElement("input");
@@ -2142,7 +2293,7 @@ function showSourceForm() {
   const button = document.createElement("button");
   button.type = "submit";
   button.textContent = "保存数据源";
-  [name, sourceType, provider, region, timeRange, notes, button].forEach((node) => form.append(node));
+  [name, sourceType, provider, url, region, timeRange, notes, button].forEach((node) => form.append(node));
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     button.disabled = true;
@@ -2154,6 +2305,7 @@ function showSourceForm() {
           name: name.value.trim(),
           source_type: sourceType.value,
           provider: provider.value.trim(),
+          url: url.value.trim(),
           region: region.value.trim(),
           time_range: timeRange.value.trim(),
           notes: notes.value.trim(),
@@ -2542,6 +2694,8 @@ async function loadIntake() {
     const overview = await overviewRes.json();
     intakeSources = sourceRes.ok ? await sourceRes.json() : [];
     renderIntake(overview);
+    await loadBatchList();
+    if (selectedBatchId) await loadBatchDetail(selectedBatchId);
   } catch (_error) {
     detailEl.replaceChildren(el("div", "error", "Data Intake 加载失败"));
   }
@@ -2688,6 +2842,12 @@ function renderImportBlock() {
   const preview = el("div");
   preview.id = "intake-preview";
   block.append(preview);
+  const batches = el("div");
+  batches.id = "intake-batches";
+  block.append(batches);
+  const batchDetail = el("div");
+  batchDetail.id = "batch-detail";
+  block.append(batchDetail);
   files.addEventListener("change", () => {
     intakeFiles = [...files.files];
     renderChosenFiles();
@@ -2918,8 +3078,513 @@ function renderLedgerBlock(rows) {
   return block;
 }
 
+function coverageText(label, recordType, status) {
+  const bucket = evidenceBucket(recordType);
+  if (!bucket || !Number(bucket.row_count)) return `${label}: ${status}`;
+  return `${label}: ${bucket.month_count} months / ${bucket.row_count} rows / ${status}`;
+}
+
+function mainMetric(row) {
+  if (row.record_type === "payment_signal") return row.payment_traffic || "--";
+  if (row.record_type === "traffic_signal") return [row.traffic_growth, row.current_traffic].filter(Boolean).join(" / ") || "--";
+  if (row.record_type === "authority_signal") return [row.dr_growth, row.current_dr].filter(Boolean).join(" / ") || "--";
+  return "--";
+}
+
+function renderCoverageCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "data-coverage";
+  card.append(el("h2", null, "DATA COVERAGE"));
+  [
+    coverageText("Payment", "payment_signal", paymentStatus()),
+    coverageText("Authority", "authority_signal", authorityStatus()),
+    coverageText("Traffic", "traffic_signal", trafficStatus()),
+    coverageText("Validation", "validation_signal", validationStatus()),
+  ].forEach((line) => card.append(el("div", "clamp", line)));
+  return card;
+}
+
+function renderLatestCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "latest-signals";
+  card.append(el("h2", null, "LATEST IMPORTED SIGNALS"));
+  const rows = dashboardLatest.items || [];
+  if (!rows.length) {
+    card.append(el("div", "empty", "暂无导入记录"));
+    return card;
+  }
+  const table = document.createElement("table");
+  table.className = "data-table";
+  const head = document.createElement("tr");
+  ["domain", "dataset_type", "provider", "period_month", "main_metric", "source"].forEach((name) => head.append(el("th", null, name)));
+  table.append(head);
+  rows.forEach((row) => {
+    const line = document.createElement("tr");
+    [row.domain, row.dataset_type, row.provider, row.period_month, mainMetric(row), row.source_name].forEach((value) => {
+      line.append(el("td", null, value || "--"));
+    });
+    line.addEventListener("click", () => {
+      explorerQuery = { ...explorerQuery, domain: row.domain || "", offset: 0 };
+      setView("explorer");
+    });
+    table.append(line);
+  });
+  const wrap = el("div", "data-scroll");
+  wrap.append(table);
+  card.append(wrap);
+  return card;
+}
+
+function renderExternalTopCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "external-top";
+  card.append(el("h2", null, "TOP EXTERNAL OPPORTUNITIES"));
+  card.append(el("p", "clamp", "外部机会侦查榜，不是正式 Build。正式 Build 仍由 Opportunity Queue 判断。"));
+  const rows = dashboardExternal.items || [];
+  if (!rows.length) {
+    card.append(el("div", "empty", "暂无外部机会"));
+    return card;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    const top = el("div", "slot-row");
+    top.append(el("b", null, row.domain || "--"));
+    top.append(el("span", null, `score ${row.opportunity_score} · evidence ${row.evidence_count}`));
+    line.append(top);
+    const tags = el("div", "tag-row");
+    (row.tags || []).forEach((tag) => tags.append(el("span", "mini-tag", tag)));
+    line.append(tags);
+    line.append(el("div", "clamp", row.recommended_action || "--"));
+    line.addEventListener("click", () => {
+      externalQuery = { ...externalQuery, domain: row.domain || "", offset: 0 };
+      setView("external");
+    });
+    card.append(line);
+  });
+  return card;
+}
+
+function formatCollectTime(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).replace("T", " ").slice(0, 16);
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function renderCollectStatus() {
+  const box = document.getElementById("collect-status");
+  if (!box) return;
+  const when = formatCollectTime(collectStatus.finished_at);
+  box.textContent = `Last collect: ${when} · Sources checked: ${collectStatus.sources_checked || 0} · New items: ${collectStatus.new_items || 0} · Errors: ${collectStatus.error_count || 0} · Top signal: ${collectStatus.top_signal || "--"}`;
+}
+
+function feedActions(row) {
+  const actions = el("div", "filter-bar");
+  const open = el("button", null, "查看来源");
+  open.type = "button";
+  open.addEventListener("click", () => {
+    if (row.url) window.open(row.url, "_blank", "noopener");
+  });
+  actions.append(open);
+  [
+    ["加入机会", "opportunity"],
+    ["抓取页面", "crawl"],
+    ["转成竞品页", "competitor"],
+    ["加入关键词池", "keyword"],
+  ].forEach(([label, action]) => {
+    const button = el("button", null, label);
+    button.type = "button";
+    button.addEventListener("click", () => runFeedAction(row.id, action, button));
+    actions.append(button);
+  });
+  return actions;
+}
+
+async function runFeedAction(feedId, action, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/intelligence/feed/${feedId}/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const data = await response.json();
+    jobEl.textContent = data.message || data.detail || (response.ok ? "已处理" : "操作失败");
+  } catch (_error) {
+    jobEl.textContent = "操作失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function appendFeedRows(card, rows) {
+  if (!rows.length) {
+    card.append(el("div", "empty", "暂无资讯。点击顶部“立即采集”抓取公开 RSS。"));
+    return;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    line.append(el("div", "clamp", `${row.time || row.created_at || "--"} · ${row.source || row.source_name || "--"} · ${row.domain || "--"} · ${row.signal || "--"}`));
+    line.append(el("div", null, `[${row.source || row.source_name || "--"}] ${row.title || "--"}`));
+    line.append(el("div", "clamp", row.why || row.why_it_matters || "--"));
+    line.append(feedActions(row));
+    card.append(line);
+  });
+}
+
+function renderFeedCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "intelligence-feed";
+  card.append(el("h2", null, "INTELLIGENCE FEED"));
+  appendFeedRows(card, (dashboardFeed.items || []).slice(0, 20));
+  return card;
+}
+
+function renderRankCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "top-domains";
+  card.append(el("h2", null, "TOP DOMAINS"));
+  [
+    ["Top Payment Domains", dashboardRanks.payment || []],
+    ["Top Traffic Growth Domains", dashboardRanks.traffic || []],
+    ["Top DR Growth Domains", dashboardRanks.authority || []],
+  ].forEach(([title, rows]) => {
+    card.append(el("h3", null, title));
+    if (!rows.length) {
+      card.append(el("div", "empty", "暂无"));
+      return;
+    }
+    rows.forEach((row) => {
+      card.append(el("div", "clamp", `#${row.rank} ${row.domain} · ${row.metric || "--"} · ${row.period_month || "--"}`));
+    });
+  });
+  return card;
+}
+
+async function loadFeedPage() {
+  const data = await loadJsonObject("/api/intelligence/feed?limit=50");
+  const root = document.getElementById("cockpit");
+  if (!root) return;
+  root.replaceChildren();
+  const page = el("section", "cockpit-card");
+  page.id = "feed-page";
+  page.append(el("h2", null, "INTELLIGENCE FEED"));
+  appendFeedRows(page, (data && data.items) || []);
+  root.append(page);
+}
+
+function filterInput(id, placeholder, value) {
+  const input = el("input");
+  input.id = id;
+  input.placeholder = placeholder;
+  input.value = value || "";
+  return input;
+}
+
+function filterSelect(id, options, value) {
+  const select = el("select");
+  select.id = id;
+  options.forEach(([label, optionValue]) => {
+    const option = el("option", null, label);
+    option.value = optionValue;
+    if (optionValue === (value || "")) option.selected = true;
+    select.append(option);
+  });
+  return select;
+}
+
+function pageBar(total, limit, offset, onMove) {
+  const bar = el("div", "pager");
+  const prev = el("button", null, "上一页");
+  prev.type = "button";
+  prev.disabled = offset <= 0;
+  prev.addEventListener("click", () => onMove(Math.max(0, offset - limit)));
+  const next = el("button", null, "下一页");
+  next.type = "button";
+  next.disabled = offset + limit >= total;
+  next.addEventListener("click", () => onMove(offset + limit));
+  const from = total ? offset + 1 : 0;
+  const to = Math.min(offset + limit, total);
+  bar.append(prev, el("span", null, `${from}-${to} / ${total}`), next);
+  return bar;
+}
+
+async function loadExplorer() {
+  const params = new URLSearchParams();
+  ["dataset_type", "record_type", "provider", "batch_id", "period_month", "domain", "keyword", "source_name"].forEach((key) => {
+    if (explorerQuery[key]) params.set(key, explorerQuery[key]);
+  });
+  params.set("limit", "50");
+  params.set("offset", String(explorerQuery.offset || 0));
+  const response = await fetch(`/api/explorer/records?${params.toString()}`);
+  if (!response.ok) throw new Error("explorer");
+  explorerPage = await response.json();
+  if (viewMode === "explorer") renderExplorer();
+}
+
+function readExplorerFilters() {
+  const read = (id) => (document.getElementById(id)?.value || "").trim();
+  explorerQuery = {
+    dataset_type: read("explorer-dataset"),
+    record_type: read("explorer-record"),
+    provider: read("explorer-provider"),
+    batch_id: read("explorer-batch"),
+    period_month: read("explorer-month"),
+    domain: read("explorer-domain"),
+    keyword: read("explorer-keyword"),
+    source_name: read("explorer-source"),
+    offset: 0,
+  };
+  explorerOpenId = null;
+}
+
+function renderExplorer() {
+  const root = document.getElementById("cockpit");
+  if (!root) return;
+  root.replaceChildren();
+  const page = el("section", "cockpit-card");
+  page.id = "data-explorer";
+  page.append(el("h2", null, "DATA EXPLORER"));
+  page.append(el("p", "clamp", "已 Confirm Import 的记录。默认每页 50 条，按最近导入排序。"));
+  const filters = el("div", "filter-bar");
+  filters.append(filterSelect("explorer-dataset", [
+    ["dataset_type", ""],
+    ["stripe_payment_ranking", "stripe_payment_ranking"],
+    ["dr_growth_ranking", "dr_growth_ranking"],
+    ["traffic_growth_ranking", "traffic_growth_ranking"],
+    ["serp_result", "serp_result"],
+  ], explorerQuery.dataset_type));
+  filters.append(filterSelect("explorer-record", [
+    ["record_type", ""],
+    ["payment_signal", "payment_signal"],
+    ["authority_signal", "authority_signal"],
+    ["traffic_signal", "traffic_signal"],
+    ["serp_result", "serp_result"],
+    ["crawl_signal", "crawl_signal"],
+  ], explorerQuery.record_type));
+  filters.append(filterInput("explorer-provider", "provider", explorerQuery.provider));
+  filters.append(filterInput("explorer-batch", "batch_id", explorerQuery.batch_id));
+  filters.append(filterInput("explorer-month", "period_month", explorerQuery.period_month));
+  filters.append(filterInput("explorer-domain", "domain", explorerQuery.domain));
+  filters.append(filterInput("explorer-keyword", "keyword", explorerQuery.keyword));
+  filters.append(filterInput("explorer-source", "source_name", explorerQuery.source_name));
+  const apply = el("button", null, "筛选");
+  apply.type = "button";
+  apply.addEventListener("click", () => {
+    readExplorerFilters();
+    loadExplorer().catch(() => page.append(el("div", "error", "查询失败")));
+  });
+  filters.append(apply);
+  page.append(filters);
+  const total = Number(explorerPage.total) || 0;
+  const limit = Number(explorerPage.limit) || 50;
+  const offset = Number(explorerPage.offset) || 0;
+  page.append(pageBar(total, limit, offset, (next) => {
+    explorerQuery.offset = next;
+    loadExplorer().catch(() => page.append(el("div", "error", "查询失败")));
+  }));
+  const table = document.createElement("table");
+  table.className = "data-table";
+  const head = document.createElement("tr");
+  ["domain", "title", "dataset_type", "record_type", "provider", "period_month", "rank", "payment_traffic", "monthly_traffic", "current_traffic", "traffic_growth", "growth_rate", "current_dr", "previous_dr", "dr_growth", "domain_rating", "source_name", "original_file_name", "batch_id", "imported_at"].forEach((name) => {
+    head.append(el("th", null, name));
+  });
+  table.append(head);
+  (explorerPage.items || []).forEach((row) => {
+    const line = document.createElement("tr");
+    const domainCell = el("td");
+    domainCell.append(el("span", null, row.domain || "--"));
+    if (row.sample) domainCell.append(document.createTextNode(" "), sampleTag());
+    line.append(domainCell);
+    ["title", "dataset_type", "record_type", "provider", "period_month", "rank", "payment_traffic", "monthly_traffic", "current_traffic", "traffic_growth", "growth_rate", "current_dr", "previous_dr", "dr_growth", "domain_rating", "source_name", "original_file_name", "batch_id", "imported_at"].forEach((key) => {
+      line.append(el("td", null, row[key] || "--"));
+    });
+    line.addEventListener("click", () => {
+      explorerOpenId = explorerOpenId === row.id ? null : row.id;
+      renderExplorer();
+    });
+    table.append(line);
+    if (explorerOpenId === row.id) {
+      const detail = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 20;
+      cell.append(el("div", "hint", "normalized"));
+      cell.append(el("pre", "raw-block", JSON.stringify(row.normalized || {}, null, 2)));
+      cell.append(el("div", "hint", "raw_json"));
+      cell.append(el("pre", "raw-block", row.raw_json || "{}"));
+      detail.append(cell);
+      table.append(detail);
+    }
+  });
+  if (!(explorerPage.items || []).length) table.append(el("tr", null, ""));
+  const wrap = el("div", "data-scroll");
+  wrap.append(table);
+  page.append(wrap);
+  if (!total) page.append(el("div", "empty", "没有匹配的记录"));
+  root.append(page);
+}
+
+async function loadExternal() {
+  const params = new URLSearchParams();
+  if (externalQuery.min_score !== "") params.set("min_score", externalQuery.min_score);
+  if (externalQuery.evidence_type) params.set("evidence_type", externalQuery.evidence_type);
+  if (externalQuery.domain) params.set("domain", externalQuery.domain);
+  params.set("limit", "50");
+  params.set("offset", String(externalQuery.offset || 0));
+  const response = await fetch(`/api/external-opportunities?${params.toString()}`);
+  if (!response.ok) throw new Error("external");
+  externalPage = await response.json();
+  if (viewMode === "external") renderExternal();
+}
+
+function renderExternal() {
+  const root = document.getElementById("cockpit");
+  if (!root) return;
+  root.replaceChildren();
+  const page = el("section", "cockpit-card");
+  page.id = "external-opportunities";
+  page.append(el("h2", null, "EXTERNAL OPPORTUNITIES"));
+  page.append(el("p", "clamp", "按 domain 聚合已导入的真实数据。这是外部机会侦查，不是正式 Build。"));
+  const filters = el("div", "filter-bar");
+  filters.append(filterInput("external-score", "min_score", externalQuery.min_score));
+  filters.append(filterSelect("external-type", [
+    ["evidence_type", ""],
+    ["payment", "payment"],
+    ["traffic", "traffic"],
+    ["authority", "authority"],
+    ["serp", "serp"],
+    ["competitor", "competitor"],
+  ], externalQuery.evidence_type));
+  filters.append(filterInput("external-domain", "domain", externalQuery.domain));
+  const apply = el("button", null, "筛选");
+  apply.type = "button";
+  apply.addEventListener("click", () => {
+    externalQuery = {
+      min_score: (document.getElementById("external-score")?.value || "").trim(),
+      evidence_type: (document.getElementById("external-type")?.value || "").trim(),
+      domain: (document.getElementById("external-domain")?.value || "").trim(),
+      offset: 0,
+    };
+    loadExternal().catch(() => page.append(el("div", "error", "查询失败")));
+  });
+  filters.append(apply);
+  page.append(filters);
+  const total = Number(externalPage.total) || 0;
+  const limit = Number(externalPage.limit) || 50;
+  const offset = Number(externalPage.offset) || 0;
+  page.append(pageBar(total, limit, offset, (next) => {
+    externalQuery.offset = next;
+    loadExternal().catch(() => page.append(el("div", "error", "查询失败")));
+  }));
+  const table = document.createElement("table");
+  table.className = "data-table";
+  const head = document.createElement("tr");
+  ["domain", "opportunity_score", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_month", "top_keyword", "best_payment_traffic", "best_traffic_growth", "best_dr_growth", "recommended_action"].forEach((name) => {
+    head.append(el("th", null, name));
+  });
+  table.append(head);
+  (externalPage.items || []).forEach((row) => {
+    const line = document.createElement("tr");
+    ["domain", "opportunity_score", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_month", "top_keyword", "best_payment_traffic", "best_traffic_growth", "best_dr_growth", "recommended_action"].forEach((key) => {
+      line.append(el("td", null, row[key] === 0 ? "0" : row[key] || "--"));
+    });
+    table.append(line);
+  });
+  const wrap = el("div", "data-scroll");
+  wrap.append(table);
+  page.append(wrap);
+  if (!total) page.append(el("div", "empty", "没有匹配的外部机会"));
+  root.append(page);
+}
+
+async function loadBatchList() {
+  const box = document.getElementById("intake-batches");
+  if (!box) return;
+  box.replaceChildren(el("h2", null, "Import Batches"));
+  const response = await fetch("/api/import-batches");
+  if (!response.ok) {
+    box.append(el("div", "error", "批次加载失败"));
+    return;
+  }
+  const rows = await response.json();
+  if (!Array.isArray(rows) || !rows.length) {
+    box.append(el("div", "empty", "暂无批次"));
+    return;
+  }
+  rows.forEach((row) => {
+    const card = el("div", "file-row");
+    const button = el("button", null, `batch ${row.batch_id}`);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      selectedBatchId = row.batch_id;
+      loadBatchDetail(row.batch_id);
+    });
+    card.append(button);
+    card.append(el("div", "clamp", `${row.dataset_type || "--"} · ${row.record_type || "--"} · ${row.provider || "--"} · files ${row.file_count} · rows ${row.row_count} · ${row.status || "--"}`));
+    box.append(card);
+  });
+}
+
+async function loadBatchDetail(batchId) {
+  const box = document.getElementById("batch-detail");
+  if (!box) return;
+  box.replaceChildren(el("div", "hint", "加载批次详情"));
+  const response = await fetch(`/api/import-batches/${batchId}`);
+  const data = await response.json();
+  if (!response.ok) {
+    box.replaceChildren(el("div", "error", "批次不存在"));
+    return;
+  }
+  box.replaceChildren();
+  box.append(el("h2", null, `BATCH ${data.batch_id}`));
+  [
+    `batch_id ${data.batch_id}`,
+    `dataset_type ${data.dataset_type || "--"}`,
+    `record_type ${data.record_type || "--"}`,
+    `provider ${data.provider || "--"}`,
+    `file_count ${data.file_count}`,
+    `row_count ${data.row_count}`,
+    `month_count ${data.month_count}`,
+    `latest_month ${data.latest_month || "--"}`,
+    `imported_rows ${data.imported_rows}`,
+    `skipped_rows ${data.skipped_rows}`,
+    `failed_files ${(data.failed_files || []).join(", ") || "--"}`,
+    `source_name ${data.source_name || "--"}`,
+    `created_at ${data.created_at || "--"}`,
+  ].forEach((line) => box.append(el("div", "clamp", line)));
+  const open = el("button", null, "在 Data Explorer 打开");
+  open.type = "button";
+  open.addEventListener("click", () => {
+    explorerQuery = { ...explorerQuery, batch_id: String(data.batch_id), dataset_type: data.dataset_type || "", offset: 0 };
+    setView("explorer");
+  });
+  box.append(open);
+  box.append(el("h2", null, "Files"));
+  (data.files || []).forEach((file) => {
+    box.append(el("div", "clamp", `${file.original_file_name} · ${file.period_month || "--"} · rows ${file.row_count} · ${file.status}${(file.warnings || []).length ? ` · ${file.warnings.join(", ")}` : ""}`));
+  });
+  box.append(el("h2", null, "Sample Rows"));
+  (data.sample_rows || []).forEach((row) => {
+    const normalized = Object.entries(row.normalized || {}).map(([key, value]) => `${key}=${value || "--"}`).join(" · ");
+    box.append(el("div", "file-row", `${row.domain || "--"} · rank ${row.rank || "--"} · ${row.title || "--"}`));
+    box.append(el("div", "clamp", normalized));
+  });
+}
+
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("view-dashboard").addEventListener("click", () => setView("dashboard"));
+document.getElementById("view-feed").addEventListener("click", () => setView("feed"));
+document.getElementById("view-explorer").addEventListener("click", () => setView("explorer"));
+document.getElementById("view-external").addEventListener("click", () => setView("external"));
+document.getElementById("collect-now").addEventListener("click", runCollect);
 document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));

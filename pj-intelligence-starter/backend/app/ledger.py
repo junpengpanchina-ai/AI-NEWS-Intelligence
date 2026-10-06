@@ -16,6 +16,11 @@ SOURCE_TYPES = {
     "manual",
     "csv_import",
     "public_web",
+    "rss",
+    "website",
+    "product_hunt",
+    "hacker_news",
+    "github",
 }
 
 RECORD_TYPES = {
@@ -38,6 +43,13 @@ PRESET_SOURCES = [
     ("Stripe Payment Ranking", "payment_ranking", "Stripe", "", "manual"),
     ("Dodo Payment Ranking", "payment_ranking", "Dodo", "", "manual"),
     ("Manual Research", "manual", "Manual", "", "manual"),
+    ("Product Hunt", "product_hunt", "Product Hunt", "https://www.producthunt.com/feed", "rss"),
+    ("TechCrunch", "rss", "TechCrunch", "https://techcrunch.com/feed/", "rss"),
+    ("The Verge", "rss", "The Verge", "https://www.theverge.com/rss/index.xml", "rss"),
+    ("Ars Technica", "rss", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/index", "rss"),
+    ("OpenAI Blog", "rss", "OpenAI", "https://openai.com/news/rss.xml", "rss"),
+    ("Google AI Blog", "rss", "Google", "https://blog.google/innovation-and-ai/technology/ai/rss/", "rss"),
+    ("GitHub Trending", "github", "GitHub", "https://github.com/trending", "html"),
 ]
 
 
@@ -137,8 +149,12 @@ def _source_row(row) -> dict:
         "notes",
         "created_at",
         "updated_at",
+        "last_run_at",
+        "last_status",
+        "error_message",
     ):
         data[key] = data.get(key) or ""
+    data["records_collected"] = int(data.get("records_collected") or 0)
     return data
 
 
@@ -147,10 +163,12 @@ def list_sources() -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT id, name, source_type, provider, url, region, time_range, data_format,
-                   credibility, notes, enabled, created_at, updated_at
-            FROM data_sources
-            ORDER BY id ASC
+            SELECT d.id, d.name, d.source_type, d.provider, d.url, d.region, d.time_range, d.data_format,
+                   d.credibility, d.notes, d.enabled, d.created_at, d.updated_at,
+                   r.last_run_at, r.last_status, r.records_collected, r.error_message
+            FROM data_sources d
+            LEFT JOIN source_runs r ON r.source_name = d.name
+            ORDER BY d.id ASC
             """
         ).fetchall()
         return [_source_row(row) for row in rows]
@@ -163,10 +181,12 @@ def get_source(source_id: int) -> dict | None:
     try:
         row = conn.execute(
             """
-            SELECT id, name, source_type, provider, url, region, time_range, data_format,
-                   credibility, notes, enabled, created_at, updated_at
-            FROM data_sources
-            WHERE id = ?
+            SELECT d.id, d.name, d.source_type, d.provider, d.url, d.region, d.time_range, d.data_format,
+                   d.credibility, d.notes, d.enabled, d.created_at, d.updated_at,
+                   r.last_run_at, r.last_status, r.records_collected, r.error_message
+            FROM data_sources d
+            LEFT JOIN source_runs r ON r.source_name = d.name
+            WHERE d.id = ?
             """,
             (source_id,),
         ).fetchone()
@@ -303,3 +323,21 @@ def create_source_record(payload: dict) -> dict:
         return _record_row(row)
     finally:
         conn.close()
+
+
+def set_source_enabled(source_id: int, enabled: int) -> dict | None:
+    if enabled not in (0, 1):
+        raise ValueError("enabled 只能是 0 或 1")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        updated = conn.execute(
+            "UPDATE data_sources SET enabled = ?, updated_at = ? WHERE id = ?",
+            (enabled, now, source_id),
+        )
+        conn.commit()
+        if updated.rowcount == 0:
+            return None
+    finally:
+        conn.close()
+    return get_source(source_id)

@@ -235,6 +235,10 @@ class SourceOut(BaseModel):
     enabled: int
     created_at: str
     updated_at: str
+    last_run_at: str = ""
+    last_status: str = ""
+    records_collected: int = 0
+    error_message: str = ""
 
 
 class SourceRecordIn(BaseModel):
@@ -494,3 +498,182 @@ class EvidenceStatsOut(BaseModel):
     groups: list[EvidenceGroupStats]
     record_types: list[EvidenceRecordStats]
     serp_urls: list[str] = []
+
+
+class ExplorerRecord(BaseModel):
+    id: int
+    domain: str = ""
+    title: str = ""
+    dataset_type: str = ""
+    record_type: str = ""
+    provider: str = ""
+    period_month: str = ""
+    rank: str = ""
+    payment_traffic: str = ""
+    monthly_traffic: str = ""
+    current_traffic: str = ""
+    traffic_growth: str = ""
+    growth_rate: str = ""
+    current_dr: str = ""
+    previous_dr: str = ""
+    dr_growth: str = ""
+    domain_rating: str = ""
+    source_name: str = ""
+    original_file_name: str = ""
+    batch_id: int | None = None
+    imported_at: str = ""
+    sample: bool = False
+    raw_json: str = ""
+    normalized: dict[str, str] = {}
+
+
+class ExplorerPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ExplorerRecord]
+
+
+class ImportBatchSummary(BaseModel):
+    batch_id: int
+    import_name: str = ""
+    status: str = ""
+    dataset_type: str = ""
+    record_type: str = ""
+    provider: str = ""
+    file_count: int = 0
+    row_count: int = 0
+    created_at: str = ""
+    source_name: str = ""
+
+
+class BatchFileOut(BaseModel):
+    import_id: int
+    original_file_name: str = ""
+    period_month: str = ""
+    row_count: int = 0
+    status: str = ""
+    warnings: list[str] = []
+
+
+class BatchSampleOut(BaseModel):
+    domain: str = ""
+    rank: str = ""
+    title: str = ""
+    normalized: dict[str, str] = {}
+
+
+class ImportBatchDetail(ImportBatchSummary):
+    month_count: int = 0
+    latest_month: str = ""
+    imported_rows: int = 0
+    skipped_rows: int = 0
+    failed_files: list[str] = []
+    files: list[BatchFileOut] = []
+    sample_rows: list[BatchSampleOut] = []
+
+
+class ExternalOpportunity(BaseModel):
+    domain: str
+    opportunity_score: int = 0
+    evidence_count: int = 0
+    payment_status: str = "Missing"
+    traffic_status: str = "Missing"
+    authority_status: str = "Missing"
+    serp_status: str = "Missing"
+    competitor_status: str = "Missing"
+    latest_month: str = ""
+    top_keyword: str = ""
+    best_payment_traffic: str = ""
+    best_traffic_growth: str = ""
+    best_dr_growth: str = ""
+    recommended_action: str = ""
+    tags: list[str] = []
+
+
+class ExternalOpportunityPage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ExternalOpportunity]
+
+
+class FeedItem(BaseModel):
+    id: int = 0
+    time: str = ""
+    source: str = ""
+    source_name: str = ""
+    domain: str = ""
+    url: str = ""
+    title: str = ""
+    signal: str = ""
+    feed_type: str = ""
+    why: str = ""
+    why_it_matters: str = ""
+    related_keyword: str = ""
+    related_opportunity_id: int | None = None
+    created_at: str = ""
+
+
+class FeedOut(BaseModel):
+    items: list[FeedItem]
+
+
+class CollectError(BaseModel):
+    source_name: str = ""
+    status: str = ""
+    error_message: str = ""
+    last_run_at: str = ""
+
+
+class CollectNowOut(BaseModel):
+    inserted: int = 0
+    skipped: int = 0
+    sources_checked: int = 0
+    new_items: int = 0
+    errors: list[CollectError] = []
+    top_signal: str = ""
+    finished_at: str = ""
+
+
+class CollectStatusOut(BaseModel):
+    finished_at: str = ""
+    sources_checked: int = 0
+    new_items: int = 0
+    error_count: int = 0
+    top_signal: str = ""
+
+
+class RankRow(BaseModel):
+    domain: str = ""
+    title: str = ""
+    rank: int = 0
+    period_month: str = ""
+    metric: str = ""
+
+
+class RankBoard(BaseModel):
+    payment: list[RankRow] = []
+    traffic: list[RankRow] = []
+    authority: list[RankRow] = []
+
+
+class FeedActionIn(BaseModel):
+    action: str
+
+
+class FeedActionOut(BaseModel):
+    ok: bool = True
+    message: str = ""
+    opportunity_id: int | None = None
+    cluster_id: int | None = None
+    competitor_id: int | None = None
+    status: str = ""
+
+
+class SourceRunOut(BaseModel):
+    source_name: str = ""
+    status: str = ""
+    records_collected: int = 0
+    error_message: str = ""
+    last_run_at: str = ""

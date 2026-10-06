@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PJ Intelligence V0.5.4</title>
-  <link rel="stylesheet" href="/styles.css?v=067">
+  <link rel="stylesheet" href="/styles.css?v=071">
 </head>
 <body data-screen="dashboard" data-focus="work">
   <header>
@@ -12,11 +12,16 @@
     <div class="badge">LOCAL</div>
     <nav class="switch" id="primary-nav">
       <button id="view-dashboard" class="on" type="button">Dashboard</button>
+      <button id="view-feed" type="button">Feed</button>
+      <button id="view-external" type="button">External Opportunities</button>
+      <button id="view-explorer" type="button">Data Explorer</button>
       <button id="view-opportunities" type="button">Opportunities</button>
       <button id="view-keywords" type="button">Keywords</button>
       <button id="view-competitors" type="button">Competitors</button>
       <button id="view-admin" type="button">Admin</button>
     </nav>
+    <button id="collect-now" type="button">立即采集</button>
+    <div id="collect-status" class="collect-status"></div>
     <div id="job"></div>
   </header>
   <nav id="admin-nav" class="admin-nav" hidden>
@@ -57,6 +62,6 @@
       </section>
     </div>
   </main>
-  <script src="/app.js?v=067"></script>
+  <script src="/app.js?v=071"></script>
 </body>
 </html>

@@ -3,7 +3,8 @@ import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.crawler import collect
@@ -58,6 +59,22 @@ from app.ledger import (
     get_source,
     list_source_records,
     list_sources,
+    set_source_enabled,
+)
+from app.explorer import (
+    external_opportunities,
+    get_import_batch,
+    list_explorer_records,
+    list_import_batches,
+)
+from app.feed import (
+    apply_feed_action,
+    collect_now,
+    collect_status,
+    list_feed,
+    run_source,
+    source_records,
+    top_rankings,
 )
 from app.intake import (
     build_preview,
@@ -144,6 +161,17 @@ from app.schemas import (
     IntakePreviewOut,
     CrawlJobIn,
     EvidenceStatsOut,
+    CollectNowOut,
+    CollectStatusOut,
+    FeedActionIn,
+    FeedActionOut,
+    RankBoard,
+    SourceRunOut,
+    ExplorerPage,
+    ExternalOpportunityPage,
+    FeedOut,
+    ImportBatchDetail,
+    ImportBatchSummary,
 )
 
 load_dotenv(project_root() / ".env")
@@ -720,6 +748,114 @@ def evidence_slot_stats():
     return evidence_stats()
 
 
+@app.get("/api/explorer/records", response_model=ExplorerPage)
+def explorer_records(
+    dataset_type: str | None = None,
+    record_type: str | None = None,
+    provider: str | None = None,
+    batch_id: int | None = None,
+    period_month: str | None = None,
+    domain: str | None = None,
+    keyword: str | None = None,
+    source_name: str | None = None,
+    limit: int | None = Query(default=50),
+    offset: int | None = Query(default=0),
+):
+    return list_explorer_records(
+        dataset_type,
+        record_type,
+        provider,
+        batch_id,
+        period_month,
+        domain,
+        keyword,
+        source_name,
+        limit,
+        offset,
+    )
+
+
+@app.get("/api/import-batches", response_model=list[ImportBatchSummary])
+def import_batches():
+    return list_import_batches()
+
+
+@app.get("/api/import-batches/{batch_id}", response_model=ImportBatchDetail)
+def import_batch_detail(batch_id: int):
+    detail = get_import_batch(batch_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    return detail
+
+
+@app.get("/api/external-opportunities", response_model=ExternalOpportunityPage)
+def external_opportunity_list(
+    min_score: int | None = None,
+    evidence_type: str | None = None,
+    domain: str | None = None,
+    limit: int | None = Query(default=50),
+    offset: int | None = Query(default=0),
+):
+    return external_opportunities(min_score, evidence_type, domain, limit, offset)
+
+
+@app.get("/api/intelligence/feed", response_model=FeedOut)
+def intelligence_feed_list(limit: int = 20):
+    return list_feed(limit)
+
+
+@app.post("/api/intelligence/feed/{feed_id}/action", response_model=FeedActionOut)
+def intelligence_feed_action(feed_id: int, payload: FeedActionIn):
+    try:
+        return apply_feed_action(feed_id, payload.action)
+    except ValueError as exc:
+        missing = str(exc) in {"资讯不存在", "关键词簇不存在"}
+        raise HTTPException(status_code=404 if missing else 400, detail=str(exc)) from exc
+
+
+@app.post("/api/intake/collect-now", response_model=CollectNowOut)
+async def intake_collect_now():
+    return await collect_now()
+
+
+@app.get("/api/intake/collect-status", response_model=CollectStatusOut)
+def intake_collect_status():
+    return collect_status()
+
+
+@app.get("/api/dashboard/ranks", response_model=RankBoard)
+def dashboard_ranks(limit: int = 10):
+    return top_rankings(limit)
+
+
+@app.post("/api/sources/{source_id}/run", response_model=SourceRunOut)
+async def source_run(source_id: int):
+    try:
+        return await run_source(source_id)
+    except ValueError as exc:
+        missing = str(exc) == "数据源不存在"
+        raise HTTPException(status_code=404 if missing else 400, detail=str(exc)) from exc
+
+
+@app.post("/api/sources/{source_id}/enabled", response_model=SourceOut)
+def source_enabled(source_id: int, enabled: int = Query(...)):
+    try:
+        source = set_source_enabled(source_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if source is None:
+        raise HTTPException(status_code=404, detail="数据源不存在")
+    return source
+
+
+@app.get("/api/sources/{source_id}/records")
+def source_record_list(source_id: int):
+    try:
+        return source_records(source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 def _run_serp_query(payload: GoogleSearchQueryIn):
     try:
         return search_serp(payload.query, payload.num, payload.gl, payload.hl)
@@ -765,5 +901,12 @@ def analysis(item_id: int):
 
 
 frontend_dir = project_root() / "frontend"
+
+
+@app.get("/")
+def index_page():
+    return FileResponse(frontend_dir / "index.html", headers={"Cache-Control": "no-store"})
+
+
 if frontend_dir.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
