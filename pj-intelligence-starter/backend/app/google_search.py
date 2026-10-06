@@ -128,6 +128,10 @@ def provider_health() -> dict:
         serper_message = "Set SERP_PROVIDER=serper"
     else:
         serper_message = "Set SERPER_ENABLED=true and SERPER_API_KEY"
+    from app.serper import serper_snapshot
+
+    snap = serper_snapshot()
+    last_code = snap.get("status_code")
     return {
         "serp_provider": serp_provider(),
         "providers": [
@@ -147,24 +151,68 @@ def provider_health() -> dict:
                 "configured": serper_configured,
                 "status": "ready" if serper_ready else "not_configured",
                 "message": serper_message,
+                "details": [
+                    f"daily_limit={os.getenv('SERPER_DAILY_LIMIT', '100').strip() or '100'}",
+                    f"last_status={last_code if last_code is not None else 'none'}",
+                    f"last_run_at={snap.get('ran_at') or 'none'}",
+                ],
             },
-            {
-                "name": "GSC",
-                "type": "validation",
-                "enabled": False,
-                "configured": False,
-                "status": "planned",
-                "message": "planned",
-            },
-            {
-                "name": "GA4",
-                "type": "validation",
-                "enabled": False,
-                "configured": False,
-                "status": "planned",
-                "message": "planned",
-            },
+            _planned_gsc_row(),
+            _planned_ga4_row(),
+            _planned_dataforseo_row(),
             grsai_health(),
+        ],
+    }
+
+
+def _planned_gsc_row() -> dict:
+    enabled = _env_flag("GSC_ENABLED")
+    site = os.getenv("GSC_SITE_URL", "").strip()
+    mode = os.getenv("GSC_AUTH_MODE", "manual_or_service_account").strip() or "manual_or_service_account"
+    return {
+        "name": "GSC",
+        "type": "validation",
+        "enabled": enabled,
+        "configured": enabled and bool(site),
+        "status": "not_configured",
+        "message": "planned connector",
+        "details": [f"auth_mode={mode}", f"site_url={site or 'empty'}"],
+    }
+
+
+def _planned_ga4_row() -> dict:
+    enabled = _env_flag("GA4_ENABLED")
+    property_id = os.getenv("GA4_PROPERTY_ID", "").strip()
+    mode = os.getenv("GA4_AUTH_MODE", "manual_or_service_account").strip() or "manual_or_service_account"
+    return {
+        "name": "GA4",
+        "type": "validation",
+        "enabled": enabled,
+        "configured": enabled and bool(property_id),
+        "status": "not_configured",
+        "message": "planned connector",
+        "details": [f"auth_mode={mode}", f"property_id={property_id or 'empty'}"],
+    }
+
+
+def _planned_dataforseo_row() -> dict:
+    enabled = _env_flag("DATAFORSEO_ENABLED")
+    login_present = _env_set("DATAFORSEO_LOGIN")
+    password_present = _env_set("DATAFORSEO_PASSWORD")
+    location = os.getenv("DATAFORSEO_LOCATION_CODE", "2840").strip() or "2840"
+    language = os.getenv("DATAFORSEO_LANGUAGE_CODE", "en").strip() or "en"
+    return {
+        "name": "DataForSEO",
+        "type": "serp",
+        "enabled": enabled,
+        "configured": enabled and login_present and password_present,
+        "status": "not_configured",
+        "message": "planned connector",
+        "details": [
+            f"login_present={str(login_present).lower()}",
+            f"password_present={str(password_present).lower()}",
+            f"location_code={location}",
+            f"language_code={language}",
         ],
     }
 

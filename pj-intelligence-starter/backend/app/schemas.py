@@ -410,3 +410,87 @@ class GoogleSearchImportOut(BaseModel):
     raw_records_created: int
     competitors_created: int
     skipped: int = 0
+
+
+class IntakePreviewFile(BaseModel):
+    file_name: str
+    relative_path: str = ""
+    detected_dataset_type: str
+    record_type: str = ""
+    provider: str = ""
+    period_month: str = ""
+    previous_month: str = ""
+    columns: list[str] = []
+    sample_rows: list[dict] = []
+    confidence: float = 0
+    warnings: list[str] = []
+
+
+class IntakePreviewOut(BaseModel):
+    preview_id: str
+    status: str = "preview"
+    files: list[IntakePreviewFile]
+
+
+class IntakeConfirmFile(BaseModel):
+    file_name: str
+    relative_path: str = ""
+    dataset_type: str = ""
+    record_type: str = ""
+    provider: str = ""
+    import_note: str = ""
+
+
+class IntakeConfirmIn(BaseModel):
+    preview_id: str
+    import_name: str = ""
+    import_note: str = ""
+    source_id: int | None = None
+    review_confirmed: bool = False
+    files: list[IntakeConfirmFile] = []
+
+
+class IntakeImportResult(BaseModel):
+    file_name: str
+    import_id: int = 0
+    record_type: str = ""
+    dataset_type: str = ""
+    row_count: int = 0
+    status: str
+    message: str = ""
+
+
+class IntakeConfirmOut(BaseModel):
+    imports: list[IntakeImportResult]
+
+
+class CrawlJobIn(BaseModel):
+    url: str = ""
+    domain: str = ""
+    keyword: str = ""
+    crawl_type: str
+
+
+class EvidenceGroupStats(BaseModel):
+    record_type: str
+    dataset_type: str = ""
+    row_count: int = 0
+    month_count: int = 0
+    latest_month: str = ""
+    source_count: int = 0
+    sample_count: int = 0
+    real_count: int = 0
+
+
+class EvidenceRecordStats(EvidenceGroupStats):
+    top_domains: list[str] = []
+    source_name: str = ""
+    keyword_count: int = 0
+    best_keyword_count: int = 0
+    validation_streak: int = 0
+
+
+class EvidenceStatsOut(BaseModel):
+    groups: list[EvidenceGroupStats]
+    record_types: list[EvidenceRecordStats]
+    serp_urls: list[str] = []

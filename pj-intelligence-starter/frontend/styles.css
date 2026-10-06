@@ -187,8 +187,60 @@ body[data-focus="work"] #signals {
 .slot-status.blocked,
 .slot-status.unchecked,
 .slot-status.not_configured,
-.slot-status.planned {
+.slot-status.planned,
+.slot-status.failed {
   color: var(--amber);
+}
+
+.slot-status.missing {
+  color: var(--dim);
+}
+
+.slot-status.imported {
+  color: var(--green);
+}
+
+.intake-block {
+  margin: 0 0 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.intake-block h2 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.intake-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.intake-actions input,
+.intake-actions select,
+.file-row select {
+  min-width: 140px;
+}
+
+.drop-zone {
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  color: var(--dim);
+}
+
+.file-row {
+  margin: 8px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+#intake-files,
+#intake-folder {
+  display: none;
 }
 
 .sample-tag {

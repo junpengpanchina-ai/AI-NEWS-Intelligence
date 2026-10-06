@@ -46,6 +46,7 @@ from app.inbox import (
     get_import,
     import_csv,
     import_uploaded_csv,
+    evidence_stats,
     list_imports,
     list_raw_records,
     promote_serp_competitors,
@@ -57,6 +58,15 @@ from app.ledger import (
     get_source,
     list_source_records,
     list_sources,
+)
+from app.intake import (
+    build_preview,
+    confirm_batch,
+    dataforseo_health,
+    ga4_health,
+    gsc_health,
+    intake_overview,
+    run_crawl,
 )
 from app.keywords import (
     get_keyword_analysis,
@@ -129,6 +139,11 @@ from app.schemas import (
     SourceOut,
     SourceRecordIn,
     SourceRecordOut,
+    IntakeConfirmIn,
+    IntakeConfirmOut,
+    IntakePreviewOut,
+    CrawlJobIn,
+    EvidenceStatsOut,
 )
 
 load_dotenv(project_root() / ".env")
@@ -574,6 +589,80 @@ async def upload_csv_file(
         raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
+@app.post("/api/imports/upload-batch", response_model=IntakePreviewOut)
+async def upload_batch(request: Request):
+    form = await request.form()
+    uploads = [item for item in form.getlist("files") if hasattr(item, "read")]
+    paths = [str(item) for item in form.getlist("relative_paths")]
+    source_raw = str(form.get("source_id") or "").strip()
+    source_id = int(source_raw) if source_raw.isdigit() else None
+    auto_detect = str(form.get("auto_detect") or "true").strip().lower() != "false"
+    files = []
+    for index, upload in enumerate(uploads):
+        data = await upload.read()
+        name = upload.filename or ""
+        relative = paths[index] if index < len(paths) and paths[index] else name
+        files.append((name, relative, data))
+    try:
+        return build_preview(
+            files,
+            str(form.get("import_name") or ""),
+            str(form.get("import_note") or ""),
+            source_id,
+            str(form.get("dataset_type") or ""),
+            auto_detect,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/confirm-batch", response_model=IntakeConfirmOut)
+def confirm_import_batch(payload: IntakeConfirmIn):
+    try:
+        return confirm_batch(payload.model_dump())
+    except ValueError as exc:
+        status = 404 if str(exc) == "数据源不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/intake/overview")
+def intake_home():
+    return intake_overview()
+
+
+@app.post("/api/crawl/jobs")
+def crawl_job(payload: CrawlJobIn):
+    try:
+        return run_crawl(payload.url, payload.domain, payload.keyword, payload.crawl_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/gsc/health")
+def gsc_connector_health():
+    return gsc_health()
+
+
+@app.post("/api/gsc/query")
+def gsc_query():
+    raise HTTPException(status_code=400, detail="GSC 尚未完成授权，未请求 Google。")
+
+
+@app.get("/api/ga4/health")
+def ga4_connector_health():
+    return ga4_health()
+
+
+@app.post("/api/ga4/run-report")
+def ga4_run_report():
+    raise HTTPException(status_code=400, detail="GA4 尚未完成授权，未请求 Google。")
+
+
+@app.get("/api/dataforseo/health")
+def dataforseo_connector_health():
+    return dataforseo_health()
+
+
 @app.get("/api/imports", response_model=list[ImportOut])
 def imports():
     return list_imports()
@@ -624,6 +713,11 @@ def providers_google_check():
 @app.get("/api/raw-records", response_model=list[RawRecordOut])
 def raw_records(source_id: int | None = None, record_type: str | None = None):
     return list_raw_records(source_id, record_type)
+
+
+@app.get("/api/evidence/stats", response_model=EvidenceStatsOut)
+def evidence_slot_stats():
+    return evidence_stats()
 
 
 def _run_serp_query(payload: GoogleSearchQueryIn):

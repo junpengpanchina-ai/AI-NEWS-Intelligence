@@ -1,7 +1,9 @@
 import csv
 import io
 import json
-from datetime import datetime, timezone
+import re
+from collections import Counter, defaultdict
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 from app.db import connect
@@ -17,6 +19,10 @@ IMPORT_RECORD_TYPES = {
     "serp_result",
     "trend_signal",
     "manual_note",
+    "crawl_signal",
+    "authority_signal",
+    "market_signal",
+    "validation_signal",
 }
 
 _FIELD_ALIASES = {
@@ -393,7 +399,6 @@ def list_raw_records(source_id: int | None, record_type: str | None) -> list[dic
             LEFT JOIN data_sources s ON s.id = r.source_id
             {where}
             ORDER BY r.id DESC
-            LIMIT 500
             """,
             params,
         ).fetchall()
@@ -538,6 +543,201 @@ def promote_serp_competitors(import_id: int, cluster_id: int) -> dict | None:
         "created": created,
         "skipped": skipped,
     }
+
+
+_MONTH = re.compile(r"^\d{4}-\d{2}$")
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SAMPLE_TOKENS = ("sample", "demo", "draft check", "browser form")
+
+
+def _host(value: str) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    if "://" not in text and "/" not in text:
+        return text.removeprefix("www.")
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    return (parsed.hostname or "").removeprefix("www.")
+
+
+def _sample_host(value: str) -> bool:
+    host = _host(value)
+    return host in {"example.com", "test.com"} or host.endswith(".example.com") or host.endswith(".test.com")
+
+
+def _sample_text(value: str) -> bool:
+    text = (value or "").lower()
+    return any(token in text for token in _SAMPLE_TOKENS)
+
+
+def _parsed_raw(value: str) -> dict:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _period_month(time_range: str, raw: dict) -> str:
+    for value in (time_range, raw.get("period_month")):
+        text = str(value or "")
+        if _MONTH.match(text):
+            return text
+    return ""
+
+
+def _validation_day(time_range: str, raw: dict) -> str:
+    match = _DAY.search(str(raw.get("date") or time_range or ""))
+    return match.group(0) if match else ""
+
+
+def _day_streak(days: set[str]) -> int:
+    unique = sorted(days)
+    if not unique:
+        return 0
+    best = streak = 1
+    for previous, current in zip(unique, unique[1:]):
+        gap = (date.fromisoformat(current) - date.fromisoformat(previous)).days
+        streak = streak + 1 if gap == 1 else 1
+        if streak > best:
+            best = streak
+    return best
+
+
+def _fresh_bucket() -> dict:
+    return {
+        "row_count": 0,
+        "sample_count": 0,
+        "real_count": 0,
+        "months": set(),
+        "sources": set(),
+        "domains": Counter(),
+        "source_names": Counter(),
+        "keywords": Counter(),
+        "days": set(),
+    }
+
+
+def _is_serper(record_type: str, provider: str, source_name: str, confidence: str) -> bool:
+    if record_type != "serp_result":
+        return False
+    label = f"{provider or ''} {source_name or ''} {confidence or ''}".lower()
+    return "serper" in label
+
+
+def _sample_row(row, raw: dict) -> bool:
+    if _is_serper(row["record_type"] or "", row["provider"] or "", row["source_name"] or "", row["confidence"] or ""):
+        return False
+    notes = " ".join(
+        str(part or "")
+        for part in (
+            row["normalized_title"],
+            raw.get("title"),
+            raw.get("notes"),
+            raw.get("source_note"),
+        )
+    )
+    return (
+        _sample_host(row["normalized_domain"] or "")
+        or _sample_host(row["normalized_url"] or "")
+        or _sample_host(str(raw.get("domain") or ""))
+        or _sample_host(str(raw.get("url") or ""))
+        or _sample_text(notes)
+    )
+
+
+def _apply_row(bucket: dict, row, raw: dict, sample: bool) -> None:
+    bucket["row_count"] += 1
+    source_id = row["source_id"]
+    if source_id is not None:
+        bucket["sources"].add(int(source_id))
+    source_name = (row["source_name"] or "").strip()
+    if source_name:
+        bucket["source_names"][source_name] += 1
+    if sample:
+        bucket["sample_count"] += 1
+        return
+    bucket["real_count"] += 1
+    month = _period_month(row["time_range"] or "", raw)
+    if month:
+        bucket["months"].add(month)
+    domain = (row["normalized_domain"] or str(raw.get("domain") or "")).strip().lower()
+    if domain:
+        bucket["domains"][domain] += 1
+    keyword = str(row["normalized_keyword"] or raw.get("keyword") or "").strip().lower()
+    bucket["keywords"][keyword or "__missing__"] += 1
+    day = _validation_day(row["time_range"] or "", raw)
+    if day:
+        bucket["days"].add(day)
+
+
+def _bucket_out(record_type: str, dataset_type: str, bucket: dict, detailed: bool) -> dict:
+    months = sorted(bucket["months"])
+    payload = {
+        "record_type": record_type,
+        "dataset_type": dataset_type,
+        "row_count": bucket["row_count"],
+        "month_count": len(months),
+        "latest_month": months[-1] if months else "",
+        "source_count": len(bucket["sources"]),
+        "sample_count": bucket["sample_count"],
+        "real_count": bucket["real_count"],
+    }
+    if not detailed:
+        return payload
+    keywords = bucket["keywords"]
+    named = [count for key, count in keywords.items() if key != "__missing__"]
+    payload.update(
+        {
+            "top_domains": [domain for domain, _count in bucket["domains"].most_common(3)],
+            "source_name": bucket["source_names"].most_common(1)[0][0] if bucket["source_names"] else "",
+            "keyword_count": len(named),
+            "best_keyword_count": max(keywords.values(), default=0),
+            "validation_streak": _day_streak(bucket["days"]),
+        }
+    )
+    return payload
+
+
+def evidence_stats() -> dict:
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT r.record_type, r.normalized_domain, r.normalized_url, r.normalized_keyword,
+                   r.normalized_title, r.time_range, r.confidence, r.raw_json, r.source_id,
+                   s.name AS source_name, s.provider AS provider
+            FROM raw_source_records r
+            LEFT JOIN data_sources s ON s.id = r.source_id
+            WHERE lower(COALESCE(r.status, '')) IN ('imported', 'confirmed')
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    groups: dict[tuple[str, str], dict] = defaultdict(_fresh_bucket)
+    record_types: dict[str, dict] = defaultdict(_fresh_bucket)
+    serp_urls: list[str] = []
+    for row in rows:
+        raw = _parsed_raw(row["raw_json"] or "")
+        record_type = (row["record_type"] or "").strip()
+        dataset_type = str(raw.get("dataset_type") or "").strip()
+        sample = _sample_row(row, raw)
+        _apply_row(groups[(record_type, dataset_type)], row, raw, sample)
+        _apply_row(record_types[record_type], row, raw, sample)
+        if _is_serper(record_type, row["provider"] or "", row["source_name"] or "", row["confidence"] or ""):
+            url = (row["normalized_url"] or "").strip()
+            if url and url not in serp_urls:
+                serp_urls.append(url)
+    group_rows = [
+        _bucket_out(record_type, dataset_type, bucket, False)
+        for (record_type, dataset_type), bucket in sorted(groups.items())
+    ]
+    type_rows = []
+    for record_type, bucket in sorted(record_types.items()):
+        related = [item for item in group_rows if item["record_type"] == record_type and item["dataset_type"]]
+        dataset_type = max(related, key=lambda item: item["row_count"])["dataset_type"] if related else ""
+        type_rows.append(_bucket_out(record_type, dataset_type, bucket, True))
+    return {"groups": group_rows, "record_types": type_rows, "serp_urls": serp_urls}
 
 
 def bind_raw_record(payload: dict) -> dict:

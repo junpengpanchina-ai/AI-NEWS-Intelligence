@@ -15,6 +15,7 @@ SOURCE_TYPES = {
     "ai_search",
     "manual",
     "csv_import",
+    "public_web",
 }
 
 RECORD_TYPES = {

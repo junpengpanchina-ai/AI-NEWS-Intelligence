@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -12,6 +13,14 @@ from app.trace import record_trace
 
 install_google_log_redaction()
 _log = logging.getLogger("app.serper")
+_last_serper = {"status_code": None, "ran_at": ""}
+
+
+def serper_snapshot() -> dict:
+    return {
+        "status_code": _last_serper.get("status_code"),
+        "ran_at": _last_serper.get("ran_at") or "",
+    }
 
 
 def _enabled() -> bool:
@@ -192,3 +201,5 @@ def search_serper(query: str, num: int = 10, gl: str = "us", hl: str = "en") -> 
                 "external_serper",
                 f"provider=serper query={text} num={size} gl={region} hl={language} status_code={status} elapsed_ms={elapsed_ms}",
             )
+            _last_serper["status_code"] = status
+            _last_serper["ran_at"] = datetime.now(timezone.utc).isoformat()

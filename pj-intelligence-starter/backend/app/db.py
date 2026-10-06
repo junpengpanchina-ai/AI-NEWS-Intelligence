@@ -287,6 +287,17 @@ def init_db() -> None:
                 status TEXT,
                 created_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS import_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preview_id TEXT,
+                import_name TEXT,
+                status TEXT,
+                file_count INTEGER,
+                notes TEXT,
+                created_at TEXT,
+                confirmed_at TEXT
+            );
             """
         )
         conn.executemany(

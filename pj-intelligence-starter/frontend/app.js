@@ -23,12 +23,16 @@ let selectedSourceId = null;
 let selectedImportId = null;
 let viewMode = "dashboard";
 let dashboardOpportunityId = null;
+let evidenceStats = { groups: [], record_types: [] };
 let dashboardFeeds = {
   imports: [],
   serp: [],
   payment: [],
   traffic: [],
   keywords: [],
+  crawl: [],
+  authority: [],
+  validation: [],
 };
 let analyzeToken = 0;
 let timerId = null;
@@ -707,8 +711,21 @@ async function seedKeywordPool() {
   }
 }
 
-const ADMIN_MODES = ["health", "sources", "imports", "trace", "items", "events"];
+const ADMIN_MODES = ["intake", "health", "sources", "imports", "trace", "items", "events"];
 const VERDICT_RANK = { Build: 0, Research: 1, Observe: 2, Reject: 3 };
+const DASH_RANK = {
+  Build: 0,
+  "Build Candidate / Evidence Partial": 1,
+  "Research / Payment Signal Only": 2,
+  "Research / Traffic Signal Only": 2,
+  "Research / Authority Signal Only": 2,
+  "Research / SERP Missing": 4,
+  "Research / Competitor Missing": 4,
+  Research: 3,
+  "Research / Evidence Missing": 4,
+  Observe: 5,
+  Reject: 6,
+};
 const COPYABLE_TYPES = ["tutorial", "api_docs", "comparison"];
 const EVIDENCE_GAP = "证据不足：当前只能作为 Research / Observe，不能作为 Build 最终依据。";
 
@@ -724,6 +741,7 @@ function applyChrome(mode) {
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
   document.getElementById("view-admin").classList.toggle("on", admin);
   document.getElementById("view-health").classList.toggle("on", mode === "health");
+  document.getElementById("view-intake").classList.toggle("on", mode === "intake");
   document.getElementById("view-sources").classList.toggle("on", mode === "sources");
   document.getElementById("view-imports").classList.toggle("on", mode === "imports");
   document.getElementById("view-trace").classList.toggle("on", mode === "trace");
@@ -740,6 +758,7 @@ function applyChrome(mode) {
     keywords: "KEYWORDS",
     competitors: "COMPETITORS",
     health: "PROVIDER HEALTH",
+    intake: "DATA INTAKE",
     sources: "SOURCES",
     imports: "DATA IMPORTS",
     trace: "API TRACE",
@@ -781,7 +800,7 @@ function isSampleDomain(value) {
 
 function isSampleText(value) {
   const text = String(value || "").toLowerCase();
-  return ["test", "demo", "draft check", "browser form", "sample"].some((token) => text.includes(token));
+  return ["sample", "demo", "draft check", "browser form"].some((token) => text.includes(token));
 }
 
 function isSerperRecord(row) {
@@ -791,11 +810,7 @@ function isSerperRecord(row) {
 }
 
 function serperLinks() {
-  const links = new Set();
-  (dashboardFeeds.serp || []).forEach((row) => {
-    if (isSerperRecord(row) && row.normalized_url) links.add(row.normalized_url);
-  });
-  return links;
+  return new Set(evidenceStats.serp_urls || []);
 }
 
 function isSamplePage(page) {
@@ -804,10 +819,25 @@ function isSamplePage(page) {
   return isSampleDomain(page.domain) || isSampleDomain(page.url) || isSampleText(page.title) || isSampleText(page.notes);
 }
 
+function parsedRaw(row) {
+  try {
+    return JSON.parse(row.raw_json || "{}");
+  } catch (_error) {
+    return {};
+  }
+}
+
+function isImportedRow(row) {
+  const status = String((row && row.status) || "").toLowerCase();
+  return status === "imported" || status === "confirmed";
+}
+
 function isSampleRaw(row) {
   if (!row) return false;
   if (isSerperRecord(row)) return false;
-  return isSampleDomain(row.normalized_domain) || isSampleDomain(row.normalized_url) || isSampleText(row.normalized_title);
+  const raw = parsedRaw(row);
+  const notes = `${row.normalized_title || ""} ${row.notes || ""} ${raw.title || ""} ${raw.notes || ""} ${raw.source_note || ""}`;
+  return isSampleDomain(row.normalized_domain) || isSampleDomain(row.normalized_url) || isSampleDomain(raw.domain) || isSampleDomain(raw.url) || isSampleText(notes);
 }
 
 function sourceBlob(row) {
@@ -835,25 +865,55 @@ function displayVerdict(card) {
   return card.verdict || "--";
 }
 
-function searchDemandStatus() {
-  const external = dashboardFeeds.imports.filter((batch) => (
-    /google trends|search console|keyword tool|google_trends|search_console|keyword_tool/.test(sourceBlob(batch))
-    && !isSampleText(batch.import_name)
-    && Number(batch.row_count) > 0
-  ));
-  const realRows = dashboardFeeds.keywords.filter((row) => !isSampleRaw(row));
-  if (external.length || realRows.length) return "Ready";
-  if (keywords.length) return "Partial";
+function liveStatus(status) {
+  return status === "Partial" || status === "Ready";
+}
+
+function dashboardVerdict(card) {
+  const serp = serpStatus();
+  const comp = competitorSlotStatus(clusterPages(card));
+  const pay = paymentStatus();
+  const traffic = trafficStatus();
+  const authority = authorityStatus();
+  const payLive = liveStatus(pay);
+  const trafficLive = liveStatus(traffic);
+  const authorityLive = liveStatus(authority);
+  const marketLive = payLive || trafficLive || authorityLive;
+  const marketReady = pay === "Ready" || traffic === "Ready" || authority === "Ready";
+  if (liveStatus(serp) && liveStatus(comp) && marketLive) {
+    if (serp === "Ready" && comp === "Ready" && marketReady) return "Build";
+    return "Build Candidate / Evidence Partial";
+  }
+  if (!liveStatus(serp)) return "Research / SERP Missing";
+  if (!liveStatus(comp)) return "Research / Competitor Missing";
+  if (authorityLive && !payLive && !trafficLive) return "Research / Authority Signal Only";
+  if (payLive && !trafficLive && !authorityLive) return "Research / Payment Signal Only";
+  if (trafficLive && !payLive && !authorityLive) return "Research / Traffic Signal Only";
+  return "Research / Evidence Missing";
+}
+
+function countedRows(rows) {
+  return (rows || []).filter(isImportedRow);
+}
+
+function evidenceBucket(recordType) {
+  return (evidenceStats.record_types || []).find((row) => row.record_type === recordType) || null;
+}
+
+function statusFromBucket(bucket, ready) {
+  if (!bucket) return "Missing";
+  if (ready(bucket)) return "Ready";
+  if (Number(bucket.real_count) >= 1) return "Partial";
+  if (Number(bucket.sample_count) >= 1) return "Sample Only";
   return "Missing";
 }
 
+function searchDemandStatus() {
+  return statusFromBucket(evidenceBucket("keyword_signal"), (bucket) => Number(bucket.keyword_count) >= 20);
+}
+
 function serpStatus() {
-  const real = dashboardFeeds.serp.filter((row) => !isSampleRaw(row));
-  const sample = dashboardFeeds.serp.filter(isSampleRaw);
-  if (real.length >= 10) return "Ready";
-  if (real.length >= 1) return "Partial";
-  if (sample.length) return "Sample Only";
-  return "Missing";
+  return statusFromBucket(evidenceBucket("serp_result"), (bucket) => Number(bucket.best_keyword_count) >= 10);
 }
 
 function competitorSlotStatus(pages) {
@@ -865,77 +925,80 @@ function competitorSlotStatus(pages) {
   return "Missing";
 }
 
-function namedSignalStatus(rows, imports, pattern) {
-  const matched = imports.filter((batch) => pattern.test(sourceBlob(batch)));
-  const realRows = rows.filter((row) => !isSampleRaw(row));
-  const sampleRows = rows.filter(isSampleRaw);
-  const realImports = matched.filter((batch) => !isSampleText(batch.import_name) && Number(batch.row_count) > 0);
-  if (realRows.length || realImports.length) return "Ready";
-  if (sampleRows.length || matched.some((batch) => isSampleText(batch.import_name) || Number(batch.row_count) > 0)) return "Sample Only";
-  return "Missing";
+function periodMonth(row) {
+  const raw = parsedRaw(row);
+  const month = String(raw.period_month || row.time_range || "");
+  return /^\d{4}-\d{2}$/.test(month) ? month : "";
+}
+
+function coverageStatus(recordType) {
+  return statusFromBucket(
+    evidenceBucket(recordType),
+    (bucket) => Number(bucket.real_count) >= 100 && Number(bucket.month_count) >= 3,
+  );
 }
 
 function paymentStatus() {
-  return namedSignalStatus(dashboardFeeds.payment, dashboardFeeds.imports, /dodo|stripe|nexi|razorpay/);
+  return coverageStatus("payment_signal");
 }
 
 function realTrafficRows() {
-  return dashboardFeeds.traffic.filter((row) => !isSampleRaw(row));
+  return countedRows(dashboardFeeds.traffic).filter((row) => !isSampleRaw(row));
 }
 
 function trafficFact(row) {
-  let raw = {};
-  try {
-    raw = JSON.parse(row.raw_json || "{}");
-  } catch (_error) {
-    raw = {};
-  }
+  const raw = parsedRaw(row);
   return {
     domain: row.normalized_domain || raw.domain || "--",
-    traffic: raw.traffic || (row.metric_name === "traffic" ? row.metric_value : "") || "--",
-    growth: raw.traffic_growth || "--",
+    traffic: raw.current_traffic || raw.monthly_traffic || raw.traffic || (row.metric_name === "traffic" ? row.metric_value : "") || "--",
+    growth: raw.traffic_growth || raw.growth_rate || "--",
   };
 }
 
 function trafficStatus() {
-  const real = realTrafficRows();
-  const sample = dashboardFeeds.traffic.filter(isSampleRaw);
-  if (real.length >= 10) return "Ready";
-  if (real.length >= 1) return "Partial";
-  if (sample.length) return "Sample Only";
-  return "Missing";
+  return coverageStatus("traffic_signal");
+}
+
+function authorityStatus() {
+  return coverageStatus("authority_signal");
+}
+
+function crawlStatus() {
+  return statusFromBucket(evidenceBucket("crawl_signal"), (bucket) => Number(bucket.real_count) >= 10);
 }
 
 function validationStatus() {
-  const matched = dashboardFeeds.imports.filter((batch) => /search console|ga4|google analytics|signup|payment validation/.test(sourceBlob(batch)) || batch.source_type === "search_console");
-  const real = matched.filter((batch) => !isSampleText(batch.import_name) && Number(batch.row_count) > 0);
-  if (real.length) return "Ready";
-  if (matched.length) return "Sample Only";
-  return "Missing";
+  return statusFromBucket(evidenceBucket("validation_signal"), (bucket) => Number(bucket.validation_streak) >= 7);
 }
 
-function evidenceSlots(card) {
-  const pages = card ? clusterPages(card) : competitors;
+function evidenceSlots() {
   return [
-    ["Search Demand", searchDemandStatus()],
-    ["SERP Top 10", serpStatus()],
-    ["Competitor Pages", competitorSlotStatus(pages.length ? pages : [])],
-    ["Payment Signal", paymentStatus()],
+    ["Demand Signal", searchDemandStatus()],
+    ["SERP Signal", serpStatus()],
+    ["Competitor Signal", competitorSlotStatus(competitors)],
+    ["Crawl Signal", crawlStatus()],
     ["Traffic Signal", trafficStatus()],
+    ["Authority Signal", authorityStatus()],
+    ["Payment Signal", paymentStatus()],
     ["Validation Signal", validationStatus()],
   ];
 }
 
 function decisionGaps() {
   const gaps = [];
-  const serpReal = dashboardFeeds.serp.filter((row) => !isSampleRaw(row)).length;
-  if (serpReal >= 1 && serpReal < 10) gaps.push("SERP Top 10 数据不足");
-  else if (serpStatus() !== "Ready") gaps.push("SERP Top 10 未导入");
+  const serpReal = serpStatus();
+  if (serpReal === "Partial") gaps.push("SERP Top 10 数据不足");
+  else if (serpReal !== "Ready") gaps.push("SERP Top 10 未导入");
   const competitorReal = realPages(competitors).length;
   if (competitorReal < 5) gaps.push("真实竞品页面不足");
-  if (paymentStatus() !== "Ready") gaps.push("支付信号缺失");
-  if (trafficStatus() === "Missing" || trafficStatus() === "Sample Only") gaps.push("流量信号缺失");
-  else if (trafficStatus() === "Partial") gaps.push("流量信号不足");
+  if (paymentStatus() === "Partial") gaps.push("支付信号不足");
+  else if (paymentStatus() !== "Ready") gaps.push("支付信号缺失");
+  if (trafficStatus() === "Partial") gaps.push("流量信号不足");
+  else if (trafficStatus() !== "Ready") gaps.push("流量信号缺失");
+  if (authorityStatus() === "Partial") gaps.push("权威信号不足");
+  else if (authorityStatus() !== "Ready") gaps.push("权威信号缺失");
+  if (validationStatus() === "Partial") gaps.push("验证数据不足");
+  else if (validationStatus() !== "Ready") gaps.push("验证数据缺失");
   return gaps;
 }
 
@@ -947,12 +1010,66 @@ function sampleTag() {
   return el("span", "sample-tag", "SAMPLE / 测试样本");
 }
 
+function evidenceSummary(slotName) {
+  if (slotName === "Competitor Signal") {
+    const real = realPages(competitors);
+    const sample = competitors.filter(isSamplePage);
+    const domains = [];
+    real.forEach((page) => {
+      const domain = page.domain || hostOf(page.url);
+      if (domain && !domains.includes(domain)) domains.push(domain);
+    });
+    return {
+      record_count: real.length,
+      sample_count: sample.length,
+      month_count: 0,
+      latest_month: "--",
+      domains: domains.slice(0, 3),
+      source_name: "Competitors",
+      dataset_type: "competitor_page",
+      noun: "竞品页面",
+    };
+  }
+  const recordType = {
+    "Demand Signal": "keyword_signal",
+    "SERP Signal": "serp_result",
+    "Crawl Signal": "crawl_signal",
+    "Traffic Signal": "traffic_signal",
+    "Authority Signal": "authority_signal",
+    "Payment Signal": "payment_signal",
+    "Validation Signal": "validation_signal",
+  }[slotName] || "";
+  const bucket = evidenceBucket(recordType) || {};
+  const dataset = bucket.dataset_type || "";
+  const noun = {
+    "Demand Signal": "关键词信号",
+    "SERP Signal": "SERP 结果",
+    "Crawl Signal": "公开抓取",
+    "Traffic Signal": "流量增长记录",
+    "Authority Signal": "DR 增长记录",
+    "Payment Signal": dataset === "stripe_payment_ranking" ? "Stripe 支付信号" : "支付信号",
+    "Validation Signal": "验证数据",
+  }[slotName] || "记录";
+  return {
+    record_count: Number(bucket.row_count) || 0,
+    sample_count: Number(bucket.sample_count) || 0,
+    month_count: Number(bucket.month_count) || 0,
+    latest_month: bucket.latest_month || "--",
+    domains: bucket.top_domains || [],
+    source_name: bucket.source_name || "--",
+    dataset_type: dataset || "--",
+    noun,
+  };
+}
+
 const EVIDENCE_HOLES = [
-  ["Demand Radar", "Search Demand", "暂无真实需求数据，等待导入 Google Trends / GSC / Keyword CSV"],
-  ["SERP Evidence", "SERP Top 10", "暂无真实 SERP，等待导入 SERP CSV"],
-  ["Competitor Evidence", "Competitor Pages", "暂无真实竞品，等待 SERP 转竞品草稿"],
-  ["Payment Evidence", "Payment Signal", "暂无支付信号，等待导入 Dodo / Stripe / Nexi"],
-  ["Traffic Evidence", "Traffic Signal", "暂无流量信号，等待导入 SiteData / Similarweb / Ahrefs"],
+  ["Demand Signal", "Demand Signal", "暂无真实需求数据，等待导入 Google Trends / GSC / Keyword CSV"],
+  ["SERP Signal", "SERP Signal", "暂无真实 SERP，等待导入 SERP CSV"],
+  ["Competitor Signal", "Competitor Signal", "暂无真实竞品，等待 SERP 转竞品草稿"],
+  ["Crawl Evidence", "Crawl Signal", "暂无公开网页抓取"],
+  ["Traffic Evidence", "Traffic Signal", "暂无流量信号，等待导入流量增长榜"],
+  ["Authority Evidence", "Authority Signal", "暂无权威信号，等待导入 DR 增长榜"],
+  ["Payment Evidence", "Payment Signal", "暂无支付信号，等待导入 Stripe 支付流量榜"],
   ["Validation Evidence", "Validation Signal", "暂无验证数据，等待接入 GSC / GA4 / 注册 / 支付"],
 ];
 
@@ -979,20 +1096,20 @@ function renderDashboard() {
   const root = document.getElementById("cockpit");
   if (!root) return;
   const ranked = [...opportunities].sort((left, right) => {
-    const rank = (displayVerdict(left) === "Research / Evidence Missing" ? 1 : (VERDICT_RANK[left.verdict] ?? 9))
-      - (displayVerdict(right) === "Research / Evidence Missing" ? 1 : (VERDICT_RANK[right.verdict] ?? 9));
+    const rank = (DASH_RANK[dashboardVerdict(left)] ?? 9) - (DASH_RANK[dashboardVerdict(right)] ?? 9);
     if (rank !== 0) return rank;
     return Number(right.score) - Number(left.score);
   });
   const counts = { Build: 0, Research: 0, Observe: 0, Reject: 0 };
   ranked.forEach((card) => {
-    if (sampleBackedBuild(card)) return;
-    if (counts[card.verdict] != null) counts[card.verdict] += 1;
+    const shown = dashboardVerdict(card);
+    if (shown === "Build") counts.Build += 1;
+    else if (counts[card.verdict] != null && card.verdict !== "Build") counts[card.verdict] += 1;
   });
   const thin = ranked.filter(lacksSample);
   const evidenced = ranked.filter((card) => Number(card.competitor_count) > 0);
   const week = ranked.filter((card) => card.verdict !== "Reject" && String(card.seven_day_action || "").trim());
-  const priority = ranked.find((card) => displayVerdict(card) === "Build") || null;
+  const priority = ranked.find((card) => dashboardVerdict(card) === "Build") || null;
   if (!dashboardOpportunityId && ranked[0]) dashboardOpportunityId = ranked[0].id;
   const selected = ranked.find((card) => card.id === dashboardOpportunityId) || ranked[0] || null;
   if (selected) dashboardOpportunityId = selected.id;
@@ -1043,17 +1160,15 @@ function renderDashboard() {
     const card = el("section", "cockpit-card");
     card.append(el("h2", null, title));
     card.append(el("b", slotClass(status), status));
-    let copy = waiting;
-    if (status === "Ready") copy = "已有真实来源，可以进入判断。";
-    else if (slotName === "SERP Top 10" && status === "Partial") copy = "SERP Top 10 数据不足";
-    else if (slotName === "Competitor Pages" && status === "Partial") copy = "真实竞品页面不足";
-    else if (slotName === "Traffic Signal" && status === "Partial") copy = "真实流量不足 10 条";
-    card.append(el("p", "clamp", copy));
-    if (slotName === "Traffic Signal" && (status === "Partial" || status === "Ready")) {
-      realTrafficRows().slice(0, 3).forEach((row) => {
-        const fact = trafficFact(row);
-        card.append(el("div", "clamp", `${fact.domain} · traffic ${fact.traffic} · growth ${fact.growth}`));
-      });
+    const summary = evidenceSummary(slotName);
+    if (summary.record_count || summary.sample_count) {
+      card.append(el("p", "clamp", `已导入 ${summary.month_count} 个月，${summary.record_count} 条${summary.noun}`));
+      card.append(el("div", "clamp", `最近月份：${summary.latest_month}`));
+      card.append(el("div", "clamp", `Top domains: ${summary.domains.join(", ") || "--"}`));
+      card.append(el("div", "clamp", `${summary.source_name} · ${summary.dataset_type}`));
+      if (summary.sample_count) card.append(el("div", "clamp", `sample_count ${summary.sample_count}`));
+    } else {
+      card.append(el("p", "clamp", waiting));
     }
     holes.append(card);
   });
@@ -1069,7 +1184,7 @@ function renderDashboard() {
   queueRows.forEach((card) => {
     const row = el("div", card.id === dashboardOpportunityId ? "queue-item active" : "queue-item");
     row.dataset.opportunityId = String(card.id);
-    const shown = displayVerdict(card);
+    const shown = dashboardVerdict(card);
     const top = el("div", "queue-top");
     top.append(el("span", shown === "Build" ? "verdict-tag build" : "verdict-tag", shown));
     top.append(el("span", "title", card.title || "--"));
@@ -1077,8 +1192,8 @@ function renderDashboard() {
     row.append(top);
     row.append(el("div", "clamp", `${card.target_keyword || "--"} · ${card.page_type || "--"}`));
     if (sampleBackedBuild(card)) row.append(el("div", "gap-line", "当前只有样例数据，不能作为 Build 判断依据。"));
-    if (!sampleBackedBuild(card) && card.first_page_plan) row.append(el("div", "clamp", card.first_page_plan));
-    if (!sampleBackedBuild(card) && card.seven_day_action) row.append(el("div", "clamp", card.seven_day_action));
+    if (!sampleBackedBuild(card) && shown === card.verdict && card.first_page_plan) row.append(el("div", "clamp", card.first_page_plan));
+    if (!sampleBackedBuild(card) && shown === card.verdict && card.seven_day_action) row.append(el("div", "clamp", card.seven_day_action));
     row.addEventListener("click", () => {
       dashboardOpportunityId = card.id;
       renderDashboard();
@@ -1098,6 +1213,7 @@ function renderDashboard() {
     plan.append(el("div", "empty", "选择一张项目卡，看 7 / 14 / 30 / 60 天动作。"));
   } else {
     evidence.append(el("div", "headline", selected.title || "--"));
+    evidence.append(el("div", "hint", dashboardVerdict(selected)));
     if (sampleBackedBuild(selected)) evidence.append(el("div", "gap-line", "当前只有样例数据，不能作为 Build 判断依据。"));
     evidence.append(el("div", "hint", "Evidence Slots"));
     evidenceSlots(selected).forEach(([name, status]) => {
@@ -1161,22 +1277,30 @@ async function loadJsonList(url) {
   }
 }
 
+async function loadEvidenceStats() {
+  try {
+    const response = await fetch("/api/evidence/stats");
+    if (!response.ok) return { groups: [], record_types: [] };
+    const data = await response.json();
+    return data && Array.isArray(data.record_types) ? data : { groups: [], record_types: [], serp_urls: [] };
+  } catch (_error) {
+    return { groups: [], record_types: [], serp_urls: [] };
+  }
+}
+
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes, imports, serp, payment, traffic, keywordSignals] = await Promise.all([
+  const [oppRes, kwRes, compRes, stats] = await Promise.all([
     fetch("/api/opportunities"),
     fetch("/api/keywords"),
     fetch("/api/competitors"),
-    loadJsonList("/api/imports"),
-    loadJsonList("/api/raw-records?record_type=serp_result"),
-    loadJsonList("/api/raw-records?record_type=payment_signal"),
-    loadJsonList("/api/raw-records?record_type=traffic_signal"),
-    loadJsonList("/api/raw-records?record_type=keyword_signal"),
+    loadEvidenceStats(),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
   keywords = await kwRes.json();
   competitors = await compRes.json();
-  dashboardFeeds = { imports, serp, payment, traffic, keywords: keywordSignals };
+  evidenceStats = stats;
+  dashboardFeeds = { imports: [], serp: [], payment: [], traffic: [], keywords: [], crawl: [], authority: [], validation: [] };
   if (viewMode === "dashboard") renderDashboard();
 }
 
@@ -1193,6 +1317,12 @@ function setView(mode) {
   if (mode === "health") {
     listEl.replaceChildren(el("div", "empty", "状态在右侧"));
     loadProviderHealth();
+    return;
+  }
+  if (mode === "intake") {
+    listEl.replaceChildren(el("div", "empty", "Data Intake"));
+    detailEl.replaceChildren(el("div", "empty", "加载中"));
+    loadIntake();
     return;
   }
   if (mode === "trace") {
@@ -2376,12 +2506,425 @@ async function runGoogleHealthCheck(button) {
   }
 }
 
+const INTAKE_DATASETS = [
+  ["", "未识别"],
+  ["stripe_payment_ranking", "stripe_payment_ranking"],
+  ["dr_growth_ranking", "dr_growth_ranking"],
+  ["traffic_growth_ranking", "traffic_growth_ranking"],
+  ["new_website_ranking", "new_website_ranking"],
+  ["serp_result", "serp_result"],
+  ["keyword_signal", "keyword_signal"],
+];
+const INTAKE_DATASET_META = {
+  stripe_payment_ranking: ["payment_signal", "Stripe"],
+  dr_growth_ranking: ["authority_signal", ""],
+  traffic_growth_ranking: ["traffic_signal", ""],
+  new_website_ranking: ["market_signal", ""],
+  serp_result: ["serp_result", ""],
+  keyword_signal: ["keyword_signal", ""],
+};
+const INTAKE_RECORD_TYPES = ["payment_signal", "traffic_signal", "authority_signal", "market_signal", "serp_result", "keyword_signal", "validation_signal", "crawl_signal"];
+let intakePreview = null;
+let intakeFiles = [];
+let intakeSources = [];
+
+function statusBadge(status) {
+  return el("b", slotClass(status || "missing"), status || "missing");
+}
+
+async function loadIntake() {
+  try {
+    const [overviewRes, sourceRes] = await Promise.all([
+      fetch("/api/intake/overview"),
+      fetch("/api/sources"),
+    ]);
+    if (!overviewRes.ok) throw new Error("intake");
+    const overview = await overviewRes.json();
+    intakeSources = sourceRes.ok ? await sourceRes.json() : [];
+    renderIntake(overview);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "Data Intake 加载失败"));
+  }
+}
+
+function renderIntake(overview) {
+  listEl.replaceChildren();
+  [
+    ["Crawl Jobs", overview.crawl.status],
+    ["API Connectors", (overview.connectors.find((item) => item.provider === "serper") || {}).status || "missing"],
+    ["Batch Imports", overview.imports.status],
+    ["Source Ledger", overview.ledger.length ? "ready" : "missing"],
+  ].forEach(([name, status]) => {
+    const row = el("div", "item");
+    row.append(el("div", null, name));
+    row.append(statusBadge(status));
+    listEl.append(row);
+  });
+  detailEl.replaceChildren();
+  detailEl.append(renderCrawlBlock(overview.crawl));
+  detailEl.append(renderConnectorBlock(overview.connectors));
+  detailEl.append(renderImportBlock());
+  detailEl.append(renderLedgerBlock(overview.ledger));
+  if (intakePreview) renderIntakePreview(intakePreview);
+}
+
+function renderCrawlBlock(crawl) {
+  const block = el("section", "intake-block");
+  const head = el("div", "slot-row");
+  head.append(el("h2", null, "Crawl Jobs"));
+  head.append(statusBadge(crawl.status));
+  block.append(head);
+  block.append(el("p", "clamp", `真实抓取 ${crawl.real_count} 条，测试样本 ${crawl.sample_count} 条。只抓公开单页，sitemap 最多 20 条。`));
+  const form = el("div", "intake-actions");
+  form.append(labeledInput("intake-url", "url"));
+  form.append(labeledInput("intake-domain", "domain"));
+  form.append(labeledInput("intake-keyword", "keyword"));
+  const type = el("select");
+  type.id = "intake-crawl-type";
+  ["landing_page", "pricing_page", "docs_page", "blog_page", "sitemap", "rss", "checkout_signal"].forEach((name) => {
+    const option = el("option", null, name);
+    option.value = name;
+    type.append(option);
+  });
+  form.append(type);
+  const button = el("button", null, "抓取公开页面");
+  button.type = "button";
+  button.addEventListener("click", runIntakeCrawl);
+  form.append(button);
+  block.append(form);
+  block.append(el("div", null, ""));
+  const recent = el("div");
+  recent.id = "intake-crawl-result";
+  (crawl.recent || []).forEach((row) => {
+    recent.append(el("div", "clamp", `${row.normalized_domain || "--"} · ${row.normalized_title || row.normalized_url || "--"} · ${row.status || "--"}`));
+  });
+  block.append(recent);
+  return block;
+}
+
+function labeledInput(id, placeholder) {
+  const input = el("input");
+  input.id = id;
+  input.placeholder = placeholder;
+  return input;
+}
+
+function renderConnectorBlock(connectors) {
+  const block = el("section", "intake-block");
+  block.append(el("h2", null, "API Connectors"));
+  (connectors || []).forEach((item) => {
+    const card = el("div", "file-row");
+    const head = el("div", "slot-row");
+    head.append(el("b", null, `${item.name} · ${item.provider}`));
+    head.append(statusBadge(item.status));
+    card.append(head);
+    card.append(el("div", "clamp", item.message || ""));
+    if (item.fallback) card.append(el("div", "clamp", `fallback = ${item.fallback}`));
+    (item.details || []).forEach((line) => card.append(el("div", "clamp", line)));
+    if ((item.uses || []).length) card.append(el("div", "clamp", item.uses.join(" · ")));
+    if (item.provider === "gsc" || item.provider === "ga4") {
+      const button = el("button", null, "占位查询");
+      button.type = "button";
+      button.addEventListener("click", () => pingConnector(item.provider === "gsc" ? "/api/gsc/query" : "/api/ga4/run-report"));
+      card.append(button);
+    }
+    block.append(card);
+  });
+  return block;
+}
+
+function renderImportBlock() {
+  const block = el("section", "intake-block");
+  const head = el("div", "slot-row");
+  head.append(el("h2", null, "Batch Imports"));
+  block.append(head);
+  block.append(el("p", "clamp", "上传后只生成 preview，不写入证据，也不改变 Dashboard。Confirm Import 后才入库。"));
+  const form = el("div", "intake-actions");
+  form.append(labeledInput("intake-name", "import_name"));
+  form.append(labeledInput("intake-note", "import_note"));
+  const source = el("select");
+  source.id = "intake-source";
+  const auto = el("option", null, "自动选择数据源");
+  auto.value = "";
+  source.append(auto);
+  intakeSources.forEach((item) => {
+    const option = el("option", null, item.name);
+    option.value = String(item.id);
+    source.append(option);
+  });
+  form.append(source);
+  block.append(form);
+  const files = el("input");
+  files.id = "intake-files";
+  files.type = "file";
+  files.multiple = true;
+  files.accept = ".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const folder = el("input");
+  folder.id = "intake-folder";
+  folder.type = "file";
+  folder.multiple = true;
+  folder.webkitdirectory = true;
+  folder.setAttribute("webkitdirectory", "");
+  folder.setAttribute("directory", "");
+  const actions = el("div", "intake-actions");
+  const fileButton = el("button", null, "Upload Files");
+  fileButton.type = "button";
+  fileButton.addEventListener("click", () => files.click());
+  const folderButton = el("button", null, "Upload Folder");
+  folderButton.type = "button";
+  folderButton.addEventListener("click", () => folder.click());
+  actions.append(fileButton, folderButton, files, folder);
+  block.append(actions);
+  const drop = el("div", "drop-zone", "拖拽多个 CSV / XLSX 到这里");
+  drop.id = "intake-drop";
+  block.append(drop);
+  const chosen = el("div");
+  chosen.id = "intake-chosen";
+  block.append(chosen);
+  const previewButton = el("button", null, "识别文件");
+  previewButton.type = "button";
+  previewButton.addEventListener("click", previewIntake);
+  block.append(previewButton);
+  const preview = el("div");
+  preview.id = "intake-preview";
+  block.append(preview);
+  files.addEventListener("change", () => {
+    intakeFiles = [...files.files];
+    renderChosenFiles();
+  });
+  folder.addEventListener("change", () => {
+    intakeFiles = [...folder.files];
+    renderChosenFiles();
+  });
+  drop.addEventListener("dragover", (event) => event.preventDefault());
+  drop.addEventListener("drop", (event) => {
+    event.preventDefault();
+    intakeFiles = [...event.dataTransfer.files];
+    renderChosenFiles();
+  });
+  return block;
+}
+
+function renderChosenFiles() {
+  const box = document.getElementById("intake-chosen");
+  if (!box) return;
+  box.replaceChildren();
+  if (!intakeFiles.length) {
+    box.append(el("div", "clamp", "还没有选择文件"));
+    return;
+  }
+  intakeFiles.forEach((file) => {
+    box.append(el("div", "clamp", file.webkitRelativePath || file.name));
+  });
+}
+
+function renderIntakePreview(preview) {
+  const box = document.getElementById("intake-preview");
+  if (!box) return;
+  box.replaceChildren();
+  const low = (preview.files || []).some((file) => Number(file.confidence) < 0.8);
+  if (low) {
+    box.append(el("div", "gap-line", "有文件置信度低于 0.8。请核对类型后再导入，系统不会自动入库。"));
+    const label = el("label", "clamp");
+    const check = el("input");
+    check.type = "checkbox";
+    check.id = "intake-review-confirmed";
+    label.append(check, document.createTextNode(" 我已确认低置信度识别"));
+    box.append(label);
+  }
+  (preview.files || []).forEach((file, index) => {
+    const card = el("div", "file-row");
+    card.append(el("div", null, file.file_name || "--"));
+    card.append(el("div", "clamp", `relative_path ${file.relative_path || "--"}`));
+    card.append(el("div", "clamp", `detected_dataset_type ${file.detected_dataset_type || "--"} · period_month ${file.period_month || "--"} · confidence ${file.confidence}`));
+    const type = el("select");
+    type.id = `intake-type-${index}`;
+    INTAKE_DATASETS.forEach(([value, labelText]) => {
+      const option = el("option", null, labelText);
+      option.value = value;
+      if (value === file.detected_dataset_type) option.selected = true;
+      type.append(option);
+    });
+    const record = el("select");
+    record.id = `intake-record-${index}`;
+    INTAKE_RECORD_TYPES.forEach((value) => {
+      const option = el("option", null, value);
+      option.value = value;
+      if (value === file.record_type) option.selected = true;
+      record.append(option);
+    });
+    const provider = labeledInput(`intake-provider-${index}`, "provider");
+    provider.value = file.provider || "";
+    const note = labeledInput(`intake-file-note-${index}`, "import_note");
+    note.value = document.getElementById("intake-note") ? document.getElementById("intake-note").value : "";
+    type.addEventListener("change", () => {
+      const meta = INTAKE_DATASET_META[type.value];
+      if (!meta) return;
+      record.value = meta[0];
+      if (!provider.dataset.touched) provider.value = meta[1];
+    });
+    provider.addEventListener("input", () => {
+      provider.dataset.touched = "1";
+    });
+    card.append(type, record, provider, note);
+    card.append(el("div", "clamp", `columns: ${(file.columns || []).join(", ") || "--"}`));
+    (file.warnings || []).forEach((warning) => card.append(el("div", "gap-line", warning)));
+    (file.sample_rows || []).slice(0, 3).forEach((row) => {
+      const domain = row.domain || row.url || row.keyword || "";
+      card.append(el("div", "clamp", `${domain} · ${row.title || row.rank || ""}`.trim()));
+    });
+    box.append(card);
+  });
+  const button = el("button", null, "Confirm Import");
+  button.type = "button";
+  button.id = "intake-confirm";
+  button.addEventListener("click", confirmIntake);
+  box.append(button);
+}
+
+async function previewIntake() {
+  if (!intakeFiles.length) {
+    jobEl.textContent = "请选择文件";
+    return;
+  }
+  const body = new FormData();
+  intakeFiles.forEach((file) => {
+    body.append("files", file, file.name);
+    body.append("relative_paths", file.webkitRelativePath || file.name);
+  });
+  body.append("import_name", document.getElementById("intake-name").value.trim());
+  body.append("import_note", document.getElementById("intake-note").value.trim());
+  const source = document.getElementById("intake-source").value;
+  if (source) body.append("source_id", source);
+  body.append("auto_detect", "true");
+  jobEl.textContent = "识别中";
+  try {
+    const response = await fetch("/api/imports/upload-batch", { method: "POST", body });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = typeof data.detail === "string" ? data.detail : "识别失败";
+      return;
+    }
+    intakePreview = data;
+    renderIntakePreview(data);
+    jobEl.textContent = `已识别 ${data.files.length} 个文件，尚未入库`;
+  } catch (_error) {
+    jobEl.textContent = "识别失败";
+  }
+}
+
+async function confirmIntake() {
+  if (!intakePreview) return;
+  const low = (intakePreview.files || []).some((file) => Number(file.confidence) < 0.8);
+  const review = document.getElementById("intake-review-confirmed");
+  if (low && !(review && review.checked)) {
+    jobEl.textContent = "置信度低于 0.8，请确认后再导入";
+    return;
+  }
+  const files = (intakePreview.files || []).map((file, index) => ({
+    file_name: file.file_name,
+    relative_path: file.relative_path || "",
+    dataset_type: document.getElementById(`intake-type-${index}`).value,
+    record_type: document.getElementById(`intake-record-${index}`).value,
+    provider: document.getElementById(`intake-provider-${index}`).value.trim(),
+    import_note: document.getElementById(`intake-file-note-${index}`).value.trim(),
+  }));
+  const payload = {
+    preview_id: intakePreview.preview_id,
+    import_name: document.getElementById("intake-name").value.trim(),
+    import_note: document.getElementById("intake-note").value.trim(),
+    review_confirmed: !low || Boolean(review && review.checked),
+    files,
+  };
+  const source = document.getElementById("intake-source").value;
+  if (source) payload.source_id = Number(source);
+  jobEl.textContent = "导入中";
+  try {
+    const response = await fetch("/api/imports/confirm-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = typeof data.detail === "string" ? data.detail : "导入失败";
+      return;
+    }
+    const imported = (data.imports || []).filter((item) => item.status === "imported" || item.status === "empty");
+    jobEl.textContent = `已入库 ${imported.length} 个文件`;
+    intakePreview = null;
+    intakeFiles = [];
+    await loadIntake();
+  } catch (_error) {
+    jobEl.textContent = "导入失败";
+  }
+}
+
+async function runIntakeCrawl() {
+  const payload = {
+    url: document.getElementById("intake-url").value.trim(),
+    domain: document.getElementById("intake-domain").value.trim(),
+    keyword: document.getElementById("intake-keyword").value.trim(),
+    crawl_type: document.getElementById("intake-crawl-type").value,
+  };
+  jobEl.textContent = "抓取中";
+  try {
+    const response = await fetch("/api/crawl/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = typeof data.detail === "string" ? data.detail : "抓取失败";
+      return;
+    }
+    jobEl.textContent = `抓取 ${data.pages} 页 · ${data.status}`;
+    await loadIntake();
+  } catch (_error) {
+    jobEl.textContent = "抓取失败";
+  }
+}
+
+async function pingConnector(path) {
+  jobEl.textContent = "占位查询";
+  try {
+    const response = await fetch(path, { method: "POST" });
+    const data = await response.json();
+    jobEl.textContent = typeof data.detail === "string" ? data.detail : "占位接口已返回";
+  } catch (_error) {
+    jobEl.textContent = "占位查询失败";
+  }
+}
+
+function renderLedgerBlock(rows) {
+  const block = el("section", "intake-block");
+  block.append(el("h2", null, "Source Ledger"));
+  if (!rows.length) {
+    block.append(el("div", "empty", "NO SOURCE"));
+    return block;
+  }
+  rows.forEach((row) => {
+    const card = el("div", "file-row");
+    const head = el("div", "slot-row");
+    head.append(el("b", null, row.source_name || "--"));
+    head.append(statusBadge(row.last_status || "missing"));
+    card.append(head);
+    const months = (row.months_covered || []).join(", ") || "--";
+    card.append(el("div", "clamp", `${row.provider || "--"} · ${row.dataset_type || "--"} · ${row.access_mode} · rows ${row.row_count} · months ${months}`));
+    card.append(el("div", "clamp", `configured ${row.configured ? "yes" : "no"} · last_run ${row.last_run_at || "--"}`));
+    block.append(card);
+  });
+  return block;
+}
+
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("view-dashboard").addEventListener("click", () => setView("dashboard"));
 document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));
 document.getElementById("view-admin").addEventListener("click", () => setView(ADMIN_MODES.includes(viewMode) ? viewMode : "sources"));
+document.getElementById("view-intake").addEventListener("click", () => setView("intake"));
 document.getElementById("view-health").addEventListener("click", () => setView("health"));
 document.getElementById("view-sources").addEventListener("click", () => setView("sources"));
 document.getElementById("view-imports").addEventListener("click", () => setView("imports"));
