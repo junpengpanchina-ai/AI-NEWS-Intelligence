@@ -784,14 +784,30 @@ function isSampleText(value) {
   return ["test", "demo", "draft check", "browser form", "sample"].some((token) => text.includes(token));
 }
 
+function isSerperRecord(row) {
+  if (!row || row.record_type !== "serp_result") return false;
+  const label = `${row.provider || ""} ${row.source_name || ""} ${row.confidence || ""}`.toLowerCase();
+  return label.includes("serper");
+}
+
+function serperLinks() {
+  const links = new Set();
+  (dashboardFeeds.serp || []).forEach((row) => {
+    if (isSerperRecord(row) && row.normalized_url) links.add(row.normalized_url);
+  });
+  return links;
+}
+
 function isSamplePage(page) {
   if (!page) return false;
+  if (serperLinks().has(page.url)) return false;
   return isSampleDomain(page.domain) || isSampleDomain(page.url) || isSampleText(page.title) || isSampleText(page.notes);
 }
 
 function isSampleRaw(row) {
   if (!row) return false;
-  return isSampleDomain(row.normalized_domain) || isSampleDomain(row.normalized_url) || isSampleText(row.normalized_title) || isSampleText(row.raw_json);
+  if (isSerperRecord(row)) return false;
+  return isSampleDomain(row.normalized_domain) || isSampleDomain(row.normalized_url) || isSampleText(row.normalized_title);
 }
 
 function sourceBlob(row) {
@@ -835,8 +851,7 @@ function serpStatus() {
   const real = dashboardFeeds.serp.filter((row) => !isSampleRaw(row));
   const sample = dashboardFeeds.serp.filter(isSampleRaw);
   if (real.length >= 10) return "Ready";
-  if (real.length >= 5) return "Partial";
-  if (real.length > 0) return "Partial";
+  if (real.length >= 1) return "Partial";
   if (sample.length) return "Sample Only";
   return "Missing";
 }
@@ -845,8 +860,7 @@ function competitorSlotStatus(pages) {
   const real = realPages(pages);
   const sample = pages.filter(isSamplePage);
   if (real.length >= 5) return "Ready";
-  if (real.length >= 3) return "Partial";
-  if (real.length > 0) return "Partial";
+  if (real.length >= 1) return "Partial";
   if (sample.length) return "Sample Only";
   return "Missing";
 }
@@ -891,8 +905,11 @@ function evidenceSlots(card) {
 
 function decisionGaps() {
   const gaps = [];
-  if (serpStatus() !== "Ready") gaps.push("SERP Top 10 未导入");
-  if (realPages(competitors).length < 3) gaps.push("真实竞品页面不足");
+  const serpReal = dashboardFeeds.serp.filter((row) => !isSampleRaw(row)).length;
+  if (serpReal >= 1 && serpReal < 10) gaps.push("SERP Top 10 数据不足");
+  else if (serpStatus() !== "Ready") gaps.push("SERP Top 10 未导入");
+  const competitorReal = realPages(competitors).length;
+  if (competitorReal < 5) gaps.push("真实竞品页面不足");
   if (paymentStatus() !== "Ready") gaps.push("支付信号缺失");
   if (trafficStatus() !== "Ready") gaps.push("流量信号缺失");
   return gaps;
@@ -1002,8 +1019,11 @@ function renderDashboard() {
     const card = el("section", "cockpit-card");
     card.append(el("h2", null, title));
     card.append(el("b", slotClass(status), status));
-    if (status !== "Ready") card.append(el("p", "clamp", waiting));
-    else card.append(el("p", "clamp", "已有真实来源，可以进入判断。"));
+    let copy = waiting;
+    if (status === "Ready") copy = "已有真实来源，可以进入判断。";
+    else if (slotName === "SERP Top 10" && status === "Partial") copy = "SERP Top 10 数据不足";
+    else if (slotName === "Competitor Pages" && status === "Partial") copy = "真实竞品页面不足";
+    card.append(el("p", "clamp", copy));
     holes.append(card);
   });
   root.append(holes);
@@ -2244,6 +2264,7 @@ function renderProviderHealth(payload) {
     row.append(el("b", slotClass(item.status), item.status || "--"));
     detailEl.append(row);
     if (item.message) detailEl.append(el("div", "clamp", item.message));
+    (item.details || []).forEach((line) => detailEl.append(el("div", "clamp", line)));
     if (item.action) detailEl.append(el("div", "clamp", item.action));
     if (item.last_status_code != null) detailEl.append(el("div", "clamp", `last_status_code ${item.last_status_code}`));
   });

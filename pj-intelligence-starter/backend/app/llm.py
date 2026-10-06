@@ -54,17 +54,84 @@ def build_chat_completions_url(base_url: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
-def require_config() -> tuple[str, str, str]:
+def require_gateway() -> tuple[str, str]:
     base = os.getenv("LLM_BASE_URL", "").strip()
     key = os.getenv("LLM_API_KEY", "").strip()
-    model = os.getenv("LLM_MODEL_FAST", "").strip()
     if not key:
         raise LLMConfigError("未配置 LLM_API_KEY，请先在 .env 填写模型密钥")
     if not base:
         raise LLMConfigError("未配置 LLM_BASE_URL，请先在 .env 填写模型网关地址")
-    if not model:
-        raise LLMConfigError("未配置 LLM_MODEL_FAST，请先填写模型名称")
+    return base, key
+
+
+def require_config() -> tuple[str, str, str]:
+    base, key = require_gateway()
+    model = model_for_task("fast")
     return base, key, model
+
+
+_TASK_MODELS = {
+    "serp_summary": ("LLM_MODEL_SERP_SUMMARY", "LLM_MODEL_FAST"),
+    "competitor_quick": ("LLM_MODEL_COMPETITOR_QUICK", "LLM_MODEL_FAST"),
+    "keyword_intent": ("LLM_MODEL_KEYWORD_INTENT", "LLM_MODEL_FAST"),
+    "opportunity": ("LLM_MODEL_OPPORTUNITY", "LLM_MODEL_REASONING"),
+    "final": ("LLM_MODEL_FINAL", "LLM_MODEL_REASONING"),
+    "fast": ("LLM_MODEL_FAST", "LLM_MODEL_FAST"),
+    "reasoning": ("LLM_MODEL_REASONING", "LLM_MODEL_REASONING"),
+}
+
+
+def _env_model(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if value in ("${LLM_MODEL_FAST}", "${LLM_MODEL_REASONING}"):
+        return os.getenv(value[2:-1], "").strip()
+    return value
+
+
+def model_for_task(task: str) -> str:
+    name = (task or "fast").strip().lower()
+    pair = _TASK_MODELS.get(name)
+    if pair is None:
+        raise LLMConfigError("未知 task")
+    primary, fallback = pair
+    model = _env_model(primary) or _env_model(fallback)
+    if not model:
+        raise LLMConfigError(f"未配置 {primary}")
+    return model
+
+
+def grsai_health() -> dict:
+    from urllib.parse import urlsplit
+
+    base = os.getenv("LLM_BASE_URL", "").strip()
+    configured = bool(base and os.getenv("LLM_API_KEY", "").strip())
+    host = urlsplit(base).hostname or ""
+
+    def shown(task: str) -> str:
+        try:
+            return model_for_task(task)
+        except LLMConfigError:
+            return "--"
+
+    return {
+        "name": "GRSAI LLM",
+        "type": "llm",
+        "enabled": configured,
+        "configured": configured,
+        "status": "ready" if configured else "not_configured",
+        "message": "GRSAI OpenAI-compatible gateway",
+        "details": [
+            f"configured={'true' if configured else 'false'}",
+            f"base_url host={host or '--'}",
+            f"model_fast={shown('fast')}",
+            f"model_reasoning={shown('reasoning')}",
+            f"model_serp_summary={shown('serp_summary')}",
+            f"model_competitor_quick={shown('competitor_quick')}",
+            f"model_keyword_intent={shown('keyword_intent')}",
+            f"model_opportunity={shown('opportunity')}",
+            f"model_final={shown('final')}",
+        ],
+    }
 
 
 def _redact(text: str, secret: str) -> str:
@@ -166,8 +233,8 @@ EVENT_SYSTEM_PROMPT = """你是一个商业情报分析员。下面是同一事�
 请用中文输出，不要夸张，不要空话。"""
 
 
-async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]:
-    base, key, model = require_config()
+async def _complete(system: str, user: str, model: str, trace_label: str = "") -> tuple[str, str]:
+    base, key = require_gateway()
     endpoint = build_chat_completions_url(base)
     payload = {
         "model": model,
@@ -180,10 +247,7 @@ async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    logger.info("LLM_REQUEST_URL %s", endpoint)
-    logger.info("LLM_MODEL %s", model)
-    prompt_length = len(user)
-    logger.info("PROMPT_LENGTH %s", prompt_length)
+    logger.info("provider=grsai task=%s model=%s prompt_length=%s", trace_label or "fast", model, len(user))
     started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=llm_timeout_seconds()) as client:
@@ -193,38 +257,27 @@ async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]
         message = str(detail.get("message") or "")
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         timed_out = "超时" in message
-        if trace_label == "competitor" and timed_out:
-            record_trace(
-                "POST",
-                endpoint,
-                "timeout",
-                elapsed_ms,
-                "llm",
-                f"competitor analyze timeout model={model} url={endpoint} prompt_length={prompt_length}",
-            )
-        else:
-            outcome = "timeout" if timed_out else f"LLM_STATUS_CODE {detail.get('status_code')}"
-            record_trace(
-                "POST",
-                endpoint,
-                "timeout" if timed_out else detail.get("status_code"),
-                elapsed_ms,
-                "llm",
-                f"LLM_REQUEST_URL {endpoint} LLM_MODEL {model} PROMPT_LENGTH {prompt_length} {outcome}",
-            )
+        record_trace(
+            "POST",
+            "external_grsai",
+            "timeout" if timed_out else detail.get("status_code"),
+            elapsed_ms,
+            "llm",
+            f"provider=grsai model={model} prompt_length={len(user)} status_code={'timeout' if timed_out else detail.get('status_code')}",
+        )
         raise
 
     safe_text = _redact(response.text or "", key)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
     record_trace(
         "POST",
-        endpoint,
+        "external_grsai",
         response.status_code,
-        int((time.perf_counter() - started) * 1000),
+        elapsed_ms,
         "llm",
-        f"LLM_REQUEST_URL {endpoint} LLM_MODEL {model} PROMPT_LENGTH {prompt_length} LLM_STATUS_CODE {response.status_code}",
+        f"provider=grsai model={model} prompt_length={len(user)} status_code={response.status_code}",
     )
-    logger.info("LLM_STATUS_CODE %s", response.status_code)
-    logger.info("LLM_RESPONSE_PREFIX %s", safe_text[:500])
+    logger.info("provider=grsai model=%s status_code=%s elapsed_ms=%s", model, response.status_code, elapsed_ms)
 
     if response.status_code >= 400:
         raise LLMCallError(
@@ -245,7 +298,7 @@ async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         content = None
 
-    text = str(content or "").strip()
+    text = _redact(str(content or "").strip(), key)
     if not text:
         raise LLMCallError(
             _upstream_error(
@@ -258,6 +311,27 @@ async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]
             )
         )
     return model, text
+
+
+async def chat(system: str, user: str, trace_label: str = "") -> tuple[str, str]:
+    _base, _key, model = require_config()
+    return await _complete(system, user, model, trace_label or "fast")
+
+
+async def call_llm(prompt: str, task: str = "fast") -> dict:
+    text = (prompt or "").strip()
+    name = (task or "fast").strip().lower()
+    if not text:
+        raise LLMConfigError("prompt 不能为空")
+    model = model_for_task(name)
+    _model, answer = await _complete("请只按用户要求回复。", text, model, name)
+    return {
+        "provider": "grsai",
+        "task": name,
+        "model": _model,
+        "status": 200,
+        "text": answer,
+    }
 
 
 async def analyze(title: str, source: str, url: str, summary: str) -> tuple[str, str]:
@@ -285,18 +359,18 @@ KEYWORD_SYSTEM_PROMPT = """你是 Google To C 产品机会分析员。请基于�
 
 
 async def analyze_keyword(user_prompt: str) -> tuple[str, str]:
-    return await chat(KEYWORD_SYSTEM_PROMPT, user_prompt)
+    return await _complete(KEYWORD_SYSTEM_PROMPT, user_prompt, model_for_task("keyword_intent"), "keyword_intent")
 
 
 COMPETITOR_SYSTEM_PROMPT = "你是 Google To C 产品页面分析员。请用中文直接判断，不要空话。"
 
 
 async def analyze_competitor(user_prompt: str) -> tuple[str, str]:
-    return await chat(COMPETITOR_SYSTEM_PROMPT, user_prompt, trace_label="competitor")
+    return await _complete(COMPETITOR_SYSTEM_PROMPT, user_prompt, model_for_task("competitor_quick"), "competitor_quick")
 
 
 OPPORTUNITY_SYSTEM_PROMPT = "你是 Google To C 产品机会判断员。请用中文直接判断，不要空话。"
 
 
 async def analyze_opportunity(user_prompt: str) -> tuple[str, str]:
-    return await chat(OPPORTUNITY_SYSTEM_PROMPT, user_prompt)
+    return await _complete(OPPORTUNITY_SYSTEM_PROMPT, user_prompt, model_for_task("opportunity"), "opportunity")

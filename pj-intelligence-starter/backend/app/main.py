@@ -73,9 +73,11 @@ from app.llm import (
     analyze_competitor,
     analyze_keyword,
     analyze_opportunity,
+    call_llm,
     chat,
     daily_limit,
     require_config,
+    require_gateway,
 )
 from app.opportunities import (
     create_opportunity_from_keyword,
@@ -106,6 +108,7 @@ from app.schemas import (
     OpportunityAnalysisOut,
     OpportunityOut,
     ProviderHealthOut,
+    LlmSmokeIn,
     CsvImportIn,
     CsvImportResult,
     ImportDetailOut,
@@ -389,17 +392,17 @@ def competitor_analysis(page_id: int):
 
 
 @app.post("/api/debug/llm-smoke")
-async def llm_smoke():
+async def llm_smoke(payload: LlmSmokeIn | None = None):
+    body = payload or LlmSmokeIn()
     try:
-        require_config()
+        require_gateway()
     except LLMConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     limit = daily_limit()
     if not reserve_quota(limit):
         raise HTTPException(status_code=429, detail=f"已达到今日调用上限 {limit}")
-    started = time.perf_counter()
     try:
-        model, text = await chat("请只按用户要求回复。", "用中文回复：LLM OK")
+        return await call_llm(body.prompt, body.task)
     except LLMConfigError as exc:
         release_quota()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -409,12 +412,6 @@ async def llm_smoke():
     except Exception:
         release_quota()
         raise
-    return {
-        "status": "ok",
-        "model": model,
-        "elapsed_ms": int((time.perf_counter() - started) * 1000),
-        "content": text,
-    }
 
 
 @app.post("/api/competitors/{page_id}/analyze", response_model=CompetitorAnalysisOut)

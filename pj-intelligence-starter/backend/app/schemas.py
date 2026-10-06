@@ -326,6 +326,11 @@ class ImportSourceResult(BaseModel):
     updated_records: int
 
 
+class LlmSmokeIn(BaseModel):
+    task: str = "fast"
+    prompt: str = "用中文回复：模型路由成功"
+
+
 class ProviderHealthItem(BaseModel):
     name: str
     type: str
@@ -335,6 +340,7 @@ class ProviderHealthItem(BaseModel):
     message: str
     last_status_code: int | None = None
     action: str | None = None
+    details: list[str] = []
 
 
 class ProviderHealthOut(BaseModel):

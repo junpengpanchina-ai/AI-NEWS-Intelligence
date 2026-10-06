@@ -307,22 +307,24 @@ def list_raw_records(source_id: int | None, record_type: str | None) -> list[dic
     clauses = []
     params: list = []
     if source_id is not None:
-        clauses.append("source_id = ?")
+        clauses.append("r.source_id = ?")
         params.append(source_id)
     if record_type:
-        clauses.append("record_type = ?")
+        clauses.append("r.record_type = ?")
         params.append(record_type.strip())
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     conn = connect()
     try:
         rows = conn.execute(
             f"""
-            SELECT id, import_id, source_id, record_type, raw_json, normalized_title,
-                   normalized_url, normalized_keyword, normalized_domain, metric_name,
-                   metric_value, time_range, confidence, status, created_at
-            FROM raw_source_records
+            SELECT r.id, r.import_id, r.source_id, r.record_type, r.raw_json, r.normalized_title,
+                   r.normalized_url, r.normalized_keyword, r.normalized_domain, r.metric_name,
+                   r.metric_value, r.time_range, r.confidence, r.status, r.created_at,
+                   s.name AS source_name, s.provider AS provider, s.source_type AS source_type
+            FROM raw_source_records r
+            LEFT JOIN data_sources s ON s.id = r.source_id
             {where}
-            ORDER BY id DESC
+            ORDER BY r.id DESC
             LIMIT 500
             """,
             params,

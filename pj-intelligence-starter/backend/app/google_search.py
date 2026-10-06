@@ -10,6 +10,7 @@ import httpx
 
 from app.competitors import create_competitor, domain_of
 from app.db import connect, utc_today
+from app.llm import grsai_health
 from app.keywords import get_keyword_cluster
 from app.ledger import create_source_record, ensure_google_search_source, ensure_serper_source
 from app.trace import record_trace
@@ -33,7 +34,7 @@ class GoogleKeyLogFilter(logging.Filter):
         message = record.getMessage()
         secrets = [
             os.getenv(name, "").strip()
-            for name in ("GOOGLE_CSE_API_KEY", "SERPER_API_KEY")
+            for name in ("GOOGLE_CSE_API_KEY", "SERPER_API_KEY", "LLM_API_KEY")
         ]
         secrets = [item for item in secrets if item]
         lowered = message.lower()
@@ -163,6 +164,7 @@ def provider_health() -> dict:
                 "status": "planned",
                 "message": "planned",
             },
+            grsai_health(),
         ],
     }
 
