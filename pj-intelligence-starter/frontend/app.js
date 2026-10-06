@@ -816,6 +816,10 @@ function renderDashboard() {
   summary.append(el("p", "copy-line", pages.length
     ? `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`
     : "可复制：还没有达到可复制线的竞品页面。"));
+  const drafts = competitors.filter((page) => !COPYABLE_TYPES.includes(page.page_type) || Number(page.copyability_score) < 75);
+  if (drafts.length) {
+    summary.append(el("p", "copy-line", `竞品草稿：${drafts.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type || "unknown"} ${page.copyability_score}`).join(" · ")}`));
+  }
   root.append(summary);
 
   const radar = el("section", "cockpit-card");
@@ -879,6 +883,16 @@ function renderDashboard() {
   } else {
     evidence.append(el("div", "headline", selected.title || "--"));
     evidence.append(el("p", "judgment", `关键词分 ${selected.keyword_score} · 竞品 ${selected.competitor_count} · 最好 ${selected.best_competitor_domain || "无"} ${selected.best_competitor_score}`));
+    const related = competitors
+      .filter((page) => page.cluster_id === selected.cluster_id)
+      .sort((left, right) => Number(right.copyability_score) - Number(left.copyability_score));
+    if (related.length) {
+      evidence.append(el("div", "hint", "可复制页面"));
+      related.forEach((page) => {
+        const note = String(page.notes || "").split("\n")[0];
+        evidence.append(el("div", "clamp", `${page.domain || page.title || "--"} · ${page.title || "--"} · ${page.page_type || "unknown"} · ${page.copyability_score}${note ? ` · ${note}` : ""}`));
+      });
+    }
     const sourceBox = el("div");
     sourceBox.id = "dash-source-evidence";
     evidence.append(sourceBox);
@@ -1870,6 +1884,41 @@ async function openImport(id, warning) {
       line.append(el("span", null, value === undefined || value === null || value === "" ? "--" : String(value)));
       detailEl.append(line);
     });
+    if (batch.record_type === "serp_result") {
+      const form = el("form", "page-form");
+      const clusterId = document.createElement("input");
+      clusterId.type = "number";
+      clusterId.min = "1";
+      clusterId.required = true;
+      clusterId.placeholder = "cluster_id";
+      clusterId.value = "1";
+      const promote = document.createElement("button");
+      promote.type = "submit";
+      promote.textContent = "转为竞品页面草稿";
+      form.append(clusterId, promote);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        promote.disabled = true;
+        try {
+          const response = await fetch(`/api/imports/${id}/promote-serp-competitors`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cluster_id: Number(clusterId.value) }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            jobEl.textContent = typeof data.detail === "string" ? data.detail : "生成失败";
+            return;
+          }
+          jobEl.textContent = `已生成 ${data.created} 条竞品页面草稿，跳过 ${data.skipped} 条重复 URL。`;
+        } catch (_error) {
+          jobEl.textContent = "生成失败";
+        } finally {
+          promote.disabled = false;
+        }
+      });
+      detailEl.append(form);
+    }
     const rows = Array.isArray(batch.records) ? batch.records : [];
     if (rows.length === 0) {
       detailEl.append(el("div", "empty", "NO ROW"));

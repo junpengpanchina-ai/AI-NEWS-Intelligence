@@ -40,6 +40,7 @@ from app.inbox import (
     import_csv,
     list_imports,
     list_raw_records,
+    promote_serp_competitors,
     update_import_source,
 )
 from app.ledger import (
@@ -103,6 +104,8 @@ from app.schemas import (
     ImportOut,
     ImportSourceIn,
     ImportSourceResult,
+    PromoteSerpIn,
+    PromoteSerpResult,
     GoogleSearchImportIn,
     GoogleSearchImportOut,
     GoogleSearchQueryIn,
@@ -559,6 +562,18 @@ def patch_import_source(import_id: int, payload: ImportSourceIn):
         result = update_import_source(import_id, payload.source_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    return result
+
+
+@app.post("/api/imports/{import_id}/promote-serp-competitors", response_model=PromoteSerpResult)
+def promote_import_serp(import_id: int, payload: PromoteSerpIn):
+    try:
+        result = promote_serp_competitors(import_id, payload.cluster_id)
+    except ValueError as exc:
+        status = 404 if str(exc) == "关键词簇不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="导入批次不存在")
     return result

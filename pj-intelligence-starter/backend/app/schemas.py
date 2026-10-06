@@ -326,6 +326,17 @@ class ImportSourceResult(BaseModel):
     updated_records: int
 
 
+class PromoteSerpIn(BaseModel):
+    cluster_id: int
+
+
+class PromoteSerpResult(BaseModel):
+    import_id: int
+    cluster_id: int
+    created: int
+    skipped: int
+
+
 class RawBindIn(BaseModel):
     raw_record_id: int
     linked_table: str

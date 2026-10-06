@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from app.db import connect
+from app.competitors import create_competitor
+from app.keywords import get_keyword_cluster
 from app.ledger import create_source_record, get_source
 
 IMPORT_RECORD_TYPES = {
@@ -360,6 +362,111 @@ def update_import_source(import_id: int, source_id: int) -> dict | None:
         "old_source_id": old_source_id,
         "new_source_id": source_id,
         "updated_records": updated_records,
+    }
+
+
+def _serp_fields(row) -> dict:
+    raw = {}
+    try:
+        parsed = json.loads(row["raw_json"] or "{}")
+        if isinstance(parsed, dict):
+            raw = parsed
+    except (TypeError, ValueError):
+        raw = {}
+    url = str(row["normalized_url"] or raw.get("url") or raw.get("link") or "").strip()
+    domain = str(row["normalized_domain"] or raw.get("domain") or raw.get("displayLink") or "").strip()
+    title = str(row["normalized_title"] or raw.get("title") or "").strip()
+    keyword = str(row["normalized_keyword"] or raw.get("keyword") or raw.get("query") or "").strip()
+    snippet = str(raw.get("snippet") or "").strip()
+    rank = ""
+    if str(row["metric_name"] or "") == "rank" and str(row["metric_value"] or "").strip():
+        rank = str(row["metric_value"]).strip()
+    if not rank:
+        rank = str(raw.get("rank") or "").strip()
+    notes = "\n".join(part for part in (snippet, f"rank {rank}" if rank else "") if part)
+    return {
+        "url": url,
+        "domain": domain,
+        "title": title,
+        "target_keyword": keyword,
+        "notes": notes,
+        "source_id": int(row["source_id"] or 0),
+    }
+
+
+def _competitor_url_exists(url: str) -> bool:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM competitor_pages WHERE url = ?",
+            (url,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def promote_serp_competitors(import_id: int, cluster_id: int) -> dict | None:
+    if get_keyword_cluster(int(cluster_id)) is None:
+        raise ValueError("关键词簇不存在")
+    conn = connect()
+    try:
+        batch = conn.execute(
+            "SELECT id FROM source_imports WHERE id = ?",
+            (import_id,),
+        ).fetchone()
+        if batch is None:
+            return None
+        rows = conn.execute(
+            """
+            SELECT id, source_id, raw_json, normalized_title, normalized_url,
+                   normalized_keyword, normalized_domain, metric_name, metric_value
+            FROM raw_source_records
+            WHERE import_id = ? AND record_type = ?
+            ORDER BY id ASC
+            """,
+            (import_id, "serp_result"),
+        ).fetchall()
+    finally:
+        conn.close()
+    created = 0
+    skipped = 0
+    seen: set[str] = set()
+    for row in rows:
+        fields = _serp_fields(row)
+        url = fields["url"]
+        if not url or url in seen or _competitor_url_exists(url):
+            skipped += 1
+            continue
+        seen.add(url)
+        page = create_competitor({
+            "cluster_id": int(cluster_id),
+            "url": url,
+            "domain": fields["domain"],
+            "title": fields["title"],
+            "h1": "",
+            "page_type": "unknown",
+            "target_keyword": fields["target_keyword"],
+            "notes": fields["notes"],
+        })
+        if page is None:
+            skipped += 1
+            continue
+        if fields["source_id"] and get_source(fields["source_id"]) is not None:
+            create_source_record({
+                "source_id": fields["source_id"],
+                "record_type": "competitor_page",
+                "linked_table": "competitor_pages",
+                "linked_id": int(page["id"]),
+                "raw_ref": url,
+                "confidence": "medium",
+            })
+        created += 1
+    return {
+        "import_id": import_id,
+        "cluster_id": int(cluster_id),
+        "created": created,
+        "skipped": skipped,
     }
 
 
