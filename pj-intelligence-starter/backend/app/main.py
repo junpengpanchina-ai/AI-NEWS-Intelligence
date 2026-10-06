@@ -33,7 +33,15 @@ from app.competitors import (
     list_competitors,
     save_competitor_analysis,
 )
-from app.inbox import bind_raw_record, get_import, import_csv, list_imports, list_raw_records
+from app.google_search import GoogleSearchError, import_competitors, install_google_log_redaction, search_google
+from app.inbox import (
+    bind_raw_record,
+    get_import,
+    import_csv,
+    list_imports,
+    list_raw_records,
+    update_import_source,
+)
 from app.ledger import (
     create_source,
     create_source_record,
@@ -93,6 +101,12 @@ from app.schemas import (
     CsvImportResult,
     ImportDetailOut,
     ImportOut,
+    ImportSourceIn,
+    ImportSourceResult,
+    GoogleSearchImportIn,
+    GoogleSearchImportOut,
+    GoogleSearchQueryIn,
+    GoogleSearchQueryOut,
     RawBindIn,
     RawRecordOut,
     SourceIn,
@@ -103,6 +117,7 @@ from app.schemas import (
 
 load_dotenv(project_root() / ".env")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+install_google_log_redaction()
 
 
 @asynccontextmanager
@@ -538,6 +553,17 @@ def imports():
     return list_imports()
 
 
+@app.patch("/api/imports/{import_id}/source", response_model=ImportSourceResult)
+def patch_import_source(import_id: int, payload: ImportSourceIn):
+    try:
+        result = update_import_source(import_id, payload.source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    return result
+
+
 @app.get("/api/imports/{import_id}", response_model=ImportDetailOut)
 def import_detail(import_id: int):
     detail = get_import(import_id)
@@ -549,6 +575,23 @@ def import_detail(import_id: int):
 @app.get("/api/raw-records", response_model=list[RawRecordOut])
 def raw_records(source_id: int | None = None, record_type: str | None = None):
     return list_raw_records(source_id, record_type)
+
+
+@app.post("/api/google-search/query", response_model=GoogleSearchQueryOut)
+def google_search_query(payload: GoogleSearchQueryIn):
+    try:
+        items = search_google(payload.query, payload.num)
+    except GoogleSearchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return {"query": payload.query.strip(), "count": len(items), "items": items}
+
+
+@app.post("/api/google-search/import-competitors", response_model=GoogleSearchImportOut)
+def google_search_import(payload: GoogleSearchImportIn):
+    try:
+        return import_competitors(payload.cluster_id, payload.query, payload.num)
+    except GoogleSearchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @app.post("/api/source-records", response_model=SourceRecordOut)

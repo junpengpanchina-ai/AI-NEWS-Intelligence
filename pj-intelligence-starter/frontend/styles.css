@@ -40,19 +40,6 @@ header {
   flex-wrap: wrap;
 }
 
-.status {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-left: auto;
-  color: var(--dim);
-}
-
-.status b {
-  color: var(--amber);
-  font-weight: 600;
-}
-
 .brand {
   color: var(--green);
   letter-spacing: 0.08em;
@@ -68,6 +55,21 @@ header {
 
 #job {
   color: var(--dim);
+  margin-left: auto;
+}
+
+.admin-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #090b09;
+}
+
+.admin-nav[hidden] {
+  display: none;
 }
 
 .trace-row {
@@ -107,9 +109,196 @@ button:disabled {
 main {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#workspace {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr) 220px;
   grid-template-rows: minmax(0, 1fr) 300px;
+}
+
+body[data-screen="dashboard"] #workspace {
+  display: none;
+}
+
+body[data-screen="workspace"] #cockpit {
+  display: none;
+}
+
+body[data-focus="work"] #workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(280px, 1fr) minmax(240px, 42vh);
+}
+
+body[data-focus="work"] #radar,
+body[data-focus="work"] #signals {
+  display: none;
+}
+
+#cockpit {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(340px, 1.35fr);
+  grid-template-rows: auto minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 12px;
+  padding: 14px;
+}
+
+.deck {
+  grid-column: 1 / -1;
+}
+
+.deck,
+.cockpit-card {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 14px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.metric {
+  border: 1px solid var(--line);
+  padding: 8px;
+  min-width: 0;
+}
+
+.metric span {
+  display: block;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.metric b {
+  display: block;
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.metric.build {
+  border-color: #3e5634;
+}
+
+.metric.build b {
+  color: var(--green);
+}
+
+.today,
+.copy-line,
+.gap-line {
+  margin: 10px 0 0;
+  line-height: 1.5;
+}
+
+.today {
+  color: var(--text);
+}
+
+.copy-line,
+.gap-line {
+  color: var(--dim);
+}
+
+.radar-row,
+.queue-item {
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.queue-item {
+  cursor: pointer;
+}
+
+.queue-item:hover,
+.queue-item.active,
+.radar-row {
+  background: transparent;
+}
+
+.queue-item.active {
+  background: #141a12;
+}
+
+.radar-row {
+  cursor: pointer;
+}
+
+.radar-row:hover {
+  background: #141a12;
+}
+
+.row-top,
+.queue-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.row-top b,
+.queue-top .title {
+  font-weight: 650;
+}
+
+.score-num {
+  margin-left: auto;
+  color: var(--amber);
+}
+
+.verdict-tag {
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+}
+
+.verdict-tag.build {
+  color: #10140e;
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.clamp {
+  margin: 4px 0 0;
+  color: var(--dim);
+  line-height: 1.45;
+}
+
+.action-step {
+  margin: 0 0 10px;
+}
+
+.action-step b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+}
+
+.action-step span,
+.judgment {
+  line-height: 1.5;
+}
+
+#dash-source-evidence .item {
+  cursor: default;
 }
 
 .panel {
@@ -172,11 +361,12 @@ h2 {
   border-color: #6d5a2c;
 }
 
-#build-events,
 #seed-keywords,
 #add-competitor,
+#build-events,
 #add-source,
-#import-csv {
+#import-csv,
+#collect {
   margin-left: auto;
 }
 
@@ -341,9 +531,19 @@ h2 {
 }
 
 @media (max-width: 900px) {
-  main {
+  #workspace,
+  body[data-focus="work"] #workspace {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto 420px;
+  }
+
+  #cockpit {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   #signals,

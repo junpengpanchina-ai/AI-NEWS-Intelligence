@@ -45,6 +45,18 @@ _FIELD_ALIASES = {
 }
 
 _METRIC_COLUMNS = ("rank", "traffic", "score", "volume", "growth", "visits", "revenue")
+_SOURCE_NAME_CHECKS = (
+    ("dodo", "Import name mentions Dodo but selected source is not Dodo."),
+    ("stripe", "Import name mentions Stripe but selected source is not Stripe."),
+    ("nexi", "Import name mentions Nexi but selected source is not Nexi."),
+)
+
+
+def source_name_warning(import_name: str, source: dict) -> str:
+    label = f"{source.get('name') or ''} {source.get('provider') or ''}".lower()
+    text = (import_name or "").lower()
+    messages = [message for token, message in _SOURCE_NAME_CHECKS if token in text and token not in label]
+    return " ".join(messages)
 
 
 def _header_key(value: str) -> str:
@@ -128,6 +140,7 @@ def _import_row(row) -> dict:
         "notes",
         "created_at",
         "source_name",
+        "provider",
     ):
         data[key] = data.get(key) or ""
     return data
@@ -150,6 +163,9 @@ def _raw_row(row) -> dict:
         "confidence",
         "status",
         "created_at",
+        "source_name",
+        "provider",
+        "source_type",
     ):
         data[key] = data.get(key) or ""
     return data
@@ -220,7 +236,12 @@ def import_csv(payload: dict) -> dict:
         conn.commit()
     finally:
         conn.close()
-    return {"import_id": import_id, "row_count": len(rows), "status": status}
+    return {
+        "import_id": import_id,
+        "row_count": len(rows),
+        "status": status,
+        "warning": source_name_warning(import_name, source),
+    }
 
 
 def list_imports() -> list[dict]:
@@ -228,9 +249,10 @@ def list_imports() -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT i.id, i.source_id, i.import_name, i.source_type, i.record_type,
+            SELECT i.id, i.source_id, i.import_name,
+                   COALESCE(s.source_type, i.source_type) AS source_type, i.record_type,
                    i.original_filename, i.row_count, i.status, i.notes, i.created_at,
-                   s.name AS source_name
+                   s.name AS source_name, s.provider AS provider
             FROM source_imports i
             LEFT JOIN data_sources s ON s.id = i.source_id
             ORDER BY i.id DESC
@@ -246,9 +268,10 @@ def get_import(import_id: int) -> dict | None:
     try:
         row = conn.execute(
             """
-            SELECT i.id, i.source_id, i.import_name, i.source_type, i.record_type,
+            SELECT i.id, i.source_id, i.import_name,
+                   COALESCE(s.source_type, i.source_type) AS source_type, i.record_type,
                    i.original_filename, i.row_count, i.status, i.notes, i.created_at,
-                   s.name AS source_name
+                   s.name AS source_name, s.provider AS provider
             FROM source_imports i
             LEFT JOIN data_sources s ON s.id = i.source_id
             WHERE i.id = ?
@@ -260,12 +283,14 @@ def get_import(import_id: int) -> dict | None:
         detail = _import_row(row)
         records = conn.execute(
             """
-            SELECT id, import_id, source_id, record_type, raw_json, normalized_title,
-                   normalized_url, normalized_keyword, normalized_domain, metric_name,
-                   metric_value, time_range, confidence, status, created_at
-            FROM raw_source_records
-            WHERE import_id = ?
-            ORDER BY id ASC
+            SELECT r.id, r.import_id, r.source_id, r.record_type, r.raw_json, r.normalized_title,
+                   r.normalized_url, r.normalized_keyword, r.normalized_domain, r.metric_name,
+                   r.metric_value, r.time_range, r.confidence, r.status, r.created_at,
+                   s.name AS source_name, s.provider AS provider, s.source_type AS source_type
+            FROM raw_source_records r
+            LEFT JOIN data_sources s ON s.id = r.source_id
+            WHERE r.import_id = ?
+            ORDER BY r.id ASC
             LIMIT 100
             """,
             (import_id,),
@@ -303,6 +328,39 @@ def list_raw_records(source_id: int | None, record_type: str | None) -> list[dic
         return [_raw_row(row) for row in rows]
     finally:
         conn.close()
+
+
+def update_import_source(import_id: int, source_id: int) -> dict | None:
+    source = get_source(source_id)
+    if source is None:
+        raise ValueError("数据源不存在")
+    conn = connect()
+    try:
+        current = conn.execute(
+            "SELECT source_id FROM source_imports WHERE id = ?",
+            (import_id,),
+        ).fetchone()
+        if current is None:
+            return None
+        old_source_id = int(current["source_id"] or 0)
+        conn.execute(
+            "UPDATE source_imports SET source_id = ? WHERE id = ?",
+            (source_id, import_id),
+        )
+        updated = conn.execute(
+            "UPDATE raw_source_records SET source_id = ? WHERE import_id = ?",
+            (source_id, import_id),
+        )
+        conn.commit()
+        updated_records = int(updated.rowcount or 0)
+    finally:
+        conn.close()
+    return {
+        "import_id": import_id,
+        "old_source_id": old_source_id,
+        "new_source_id": source_id,
+        "updated_records": updated_records,
+    }
 
 
 def bind_raw_record(payload: dict) -> dict:

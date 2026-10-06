@@ -70,6 +70,31 @@ def seed_data_sources() -> None:
         conn.commit()
     finally:
         conn.close()
+    ensure_google_search_source()
+
+
+def ensure_google_search_source() -> dict:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM data_sources WHERE name = ?",
+            ("Google Programmable Search",),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is not None:
+        found = get_source(int(row["id"]))
+        if found is not None:
+            return found
+    return create_source({
+        "name": "Google Programmable Search",
+        "source_type": "serp",
+        "provider": "Google",
+        "url": "https://www.googleapis.com/customsearch/v1",
+        "data_format": "json",
+        "notes": "SERP results from Custom Search JSON API",
+        "enabled": 1,
+    })
 
 
 def _source_row(row) -> dict:

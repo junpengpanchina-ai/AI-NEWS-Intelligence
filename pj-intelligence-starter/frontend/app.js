@@ -21,7 +21,8 @@ let selectedPageId = null;
 let selectedOpportunityId = null;
 let selectedSourceId = null;
 let selectedImportId = null;
-let viewMode = "items";
+let viewMode = "dashboard";
+let dashboardOpportunityId = null;
 let analyzeToken = 0;
 let timerId = null;
 
@@ -560,6 +561,12 @@ function renderKeywordDetail(cluster, keywordItems, saved) {
   detailEl.append(included);
 
   const actions = el("div", "actions");
+  const googleSearch = document.createElement("button");
+  googleSearch.id = "google-competitor-search";
+  googleSearch.type = "button";
+  googleSearch.textContent = "SERP 查竞品 / 导入 SERP";
+  googleSearch.addEventListener("click", () => searchCompetitors(cluster));
+  actions.append(googleSearch);
   const generate = document.createElement("button");
   generate.id = "opportunity-generate";
   generate.type = "button";
@@ -693,23 +700,277 @@ async function seedKeywordPool() {
   }
 }
 
-function setView(mode) {
-  viewMode = mode;
-  document.getElementById("view-items").classList.toggle("on", mode === "items");
-  document.getElementById("view-events").classList.toggle("on", mode === "events");
+const ADMIN_MODES = ["sources", "imports", "trace", "items", "events"];
+const VERDICT_RANK = { Build: 0, Research: 1, Observe: 2, Reject: 3 };
+const COPYABLE_TYPES = ["tutorial", "api_docs", "comparison"];
+const EVIDENCE_GAP = "证据不足：当前只能作为 Research / Observe，不能作为 Build 最终依据。";
+
+function applyChrome(mode) {
+  const admin = ADMIN_MODES.includes(mode);
+  const focused = mode === "opportunities" || mode === "keywords" || mode === "competitors";
+  document.body.dataset.screen = mode === "dashboard" ? "dashboard" : "workspace";
+  document.body.dataset.focus = focused ? "work" : "admin";
+  document.getElementById("admin-nav").hidden = !admin;
+  document.getElementById("view-dashboard").classList.toggle("on", mode === "dashboard");
+  document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
   document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
-  document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
+  document.getElementById("view-admin").classList.toggle("on", admin);
   document.getElementById("view-sources").classList.toggle("on", mode === "sources");
+  document.getElementById("view-imports").classList.toggle("on", mode === "imports");
+  document.getElementById("view-trace").classList.toggle("on", mode === "trace");
+  document.getElementById("view-items").classList.toggle("on", mode === "items");
+  document.getElementById("view-events").classList.toggle("on", mode === "events");
   document.getElementById("build-events").hidden = mode !== "events";
   document.getElementById("seed-keywords").hidden = mode !== "keywords";
   document.getElementById("add-competitor").hidden = mode !== "competitors";
   document.getElementById("add-source").hidden = mode !== "sources";
-  document.getElementById("import-csv").hidden = mode !== "sources";
+  document.getElementById("import-csv").hidden = mode !== "imports";
+  document.getElementById("collect").hidden = mode !== "items";
+  const titles = {
+    opportunities: "OPPORTUNITIES",
+    keywords: "KEYWORDS",
+    competitors: "COMPETITORS",
+    sources: "SOURCES",
+    imports: "DATA IMPORTS",
+    trace: "API TRACE",
+    items: "ITEMS",
+    events: "MARKET SIGNALS",
+  };
+  const title = document.getElementById("list-title");
+  if (title) title.textContent = titles[mode] || "LIST";
+}
+
+function rankedOpportunities() {
+  return [...opportunities].sort((left, right) => {
+    const rank = (VERDICT_RANK[left.verdict] ?? 9) - (VERDICT_RANK[right.verdict] ?? 9);
+    if (rank !== 0) return rank;
+    return Number(right.score) - Number(left.score);
+  });
+}
+
+function lacksSample(card) {
+  const reason = String(card.verdict_reason || "");
+  return Number(card.competitor_count) === 0 || reason.includes("样本不足") || reason.includes("来源不足");
+}
+
+function copyablePages() {
+  return [...competitors]
+    .filter((page) => Number(page.copyability_score) >= 75 && COPYABLE_TYPES.includes(page.page_type))
+    .sort((left, right) => Number(right.copyability_score) - Number(left.copyability_score));
+}
+
+function metricNode(label, value, build) {
+  const node = el("div", build ? "metric build" : "metric");
+  node.append(el("span", null, label));
+  node.append(el("b", null, String(value)));
+  return node;
+}
+
+function verdictTag(verdict) {
+  const name = verdict || "--";
+  const kind = name === "Build" ? "build" : name.toLowerCase();
+  return el("span", `verdict-tag ${kind}`, name);
+}
+
+function renderDashboard() {
+  const root = document.getElementById("cockpit");
+  if (!root) return;
+  const ranked = rankedOpportunities();
+  const counts = { Build: 0, Research: 0, Observe: 0, Reject: 0 };
+  ranked.forEach((card) => {
+    if (counts[card.verdict] != null) counts[card.verdict] += 1;
+  });
+  const thin = ranked.filter(lacksSample);
+  const evidenced = ranked.filter((card) => Number(card.competitor_count) > 0);
+  const week = ranked.filter((card) => card.verdict !== "Reject" && String(card.seven_day_action || "").trim());
+  const priority = ranked.find((card) => card.verdict === "Build") || ranked[0];
+  if (!dashboardOpportunityId && priority) dashboardOpportunityId = priority.id;
+  const selected = ranked.find((card) => card.id === dashboardOpportunityId) || priority || null;
+  if (selected) dashboardOpportunityId = selected.id;
+
+  root.replaceChildren();
+  const summary = el("section", "deck");
+  summary.id = "decision-summary";
+  summary.append(el("h2", null, "DECISION SUMMARY"));
+  const metrics = el("div", "metrics");
+  metrics.append(metricNode("Build", counts.Build, true));
+  metrics.append(metricNode("Research", counts.Research, false));
+  metrics.append(metricNode("Observe", counts.Observe, false));
+  metrics.append(metricNode("Reject", counts.Reject, false));
+  metrics.append(metricNode("证据不足", thin.length, false));
+  metrics.append(metricNode("有竞品证据", evidenced.length, false));
+  metrics.append(metricNode("待 7 天动作", week.length, false));
+  summary.append(metrics);
+  let today = "今天没有项目卡。先从关键词里生成一张。";
+  if (priority && priority.verdict === "Build") {
+    today = `今天优先做这一页：${priority.first_page_plan || priority.title}`;
+  } else if (priority) {
+    today = `今天没有 Build。先处理 ${priority.verdict}：${priority.title}`;
+  }
+  summary.append(el("p", "today", today));
+  if (thin.length) {
+    summary.append(el("p", "gap-line", `证据不足：${thin.map((card) => card.title || card.target_keyword || "未命名").join("、")}`));
+  }
+  const pages = copyablePages();
+  summary.append(el("p", "copy-line", pages.length
+    ? `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`
+    : "可复制：还没有达到可复制线的竞品页面。"));
+  root.append(summary);
+
+  const radar = el("section", "cockpit-card");
+  radar.id = "demand-radar";
+  radar.append(el("h2", null, "DEMAND RADAR"));
+  const demand = [...keywords].sort((left, right) => Number(right.score) - Number(left.score)).slice(0, 7);
+  if (demand.length === 0) {
+    radar.append(el("div", "empty", "NO KEYWORD"));
+  }
+  demand.forEach((cluster) => {
+    const row = el("div", "radar-row");
+    const top = el("div", "row-top");
+    top.append(el("b", null, cluster.name || "--"));
+    top.append(el("span", "verdict-tag", keywordGrade(cluster.score)));
+    top.append(el("span", "score-num", String(cluster.score)));
+    row.append(top);
+    row.append(el("div", "clamp", `${cluster.page_type || "--"} · ${cluster.search_intent || "--"}`));
+    row.addEventListener("click", () => {
+      selectedKeywordId = cluster.id;
+      setView("keywords");
+    });
+    radar.append(row);
+  });
+  root.append(radar);
+
+  const queue = el("section", "cockpit-card");
+  queue.id = "opportunity-queue";
+  queue.append(el("h2", null, "OPPORTUNITY QUEUE"));
+  const queueRows = ranked.slice(0, 10);
+  if (queueRows.length === 0) {
+    queue.append(el("div", "empty", "NO CARD"));
+  }
+  queueRows.forEach((card) => {
+    const row = el("div", card.id === dashboardOpportunityId ? "queue-item active" : "queue-item");
+    row.dataset.opportunityId = String(card.id);
+    const top = el("div", "queue-top");
+    top.append(verdictTag(card.verdict));
+    top.append(el("span", "title", card.title || "--"));
+    top.append(el("span", "score-num", String(card.score)));
+    row.append(top);
+    row.append(el("div", "clamp", `${card.target_keyword || "--"} · ${card.page_type || "--"}`));
+    if (card.first_page_plan) row.append(el("div", "clamp", card.first_page_plan));
+    if (card.seven_day_action) row.append(el("div", "clamp", card.seven_day_action));
+    row.addEventListener("click", () => {
+      dashboardOpportunityId = card.id;
+      renderDashboard();
+    });
+    queue.append(row);
+  });
+  root.append(queue);
+
+  const evidence = el("section", "cockpit-card");
+  evidence.id = "dash-evidence";
+  evidence.append(el("h2", null, "EVIDENCE"));
+  const plan = el("section", "cockpit-card");
+  plan.id = "dash-plan";
+  plan.append(el("h2", null, "Next 7 / 14 / 30 / 60 Days"));
+  if (!selected) {
+    evidence.append(el("div", "empty", "选择一张项目卡，看证据。"));
+    plan.append(el("div", "empty", "选择一张项目卡，看 7 / 14 / 30 / 60 天动作。"));
+  } else {
+    evidence.append(el("div", "headline", selected.title || "--"));
+    evidence.append(el("p", "judgment", `关键词分 ${selected.keyword_score} · 竞品 ${selected.competitor_count} · 最好 ${selected.best_competitor_domain || "无"} ${selected.best_competitor_score}`));
+    const sourceBox = el("div");
+    sourceBox.id = "dash-source-evidence";
+    evidence.append(sourceBox);
+    [
+      ["先做这一页", selected.first_page_plan],
+      ["7 天", selected.seven_day_action],
+      ["14 天", selected.fourteen_day_action],
+      ["30 天", selected.thirty_day_metric],
+      ["60 天", selected.sixty_day_stop_rule],
+    ].forEach(([label, value]) => {
+      const step = el("div", "action-step");
+      step.append(el("b", null, label));
+      step.append(el("span", null, value || "--"));
+      plan.append(step);
+    });
+  }
+  root.append(evidence, plan);
+  if (selected) loadDashboardEvidence(selected.id);
+}
+
+async function loadDashboardEvidence(cardId) {
+  const box = document.getElementById("dash-source-evidence");
+  if (!box) return;
+  box.replaceChildren(el("div", "hint", "Source Evidence"));
+  try {
+    const response = await fetch(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`);
+    const rows = await response.json();
+    if (cardId !== dashboardOpportunityId) return;
+    if (!response.ok || !Array.isArray(rows) || rows.length === 0) {
+      box.append(el("div", "gap", EVIDENCE_GAP));
+      return;
+    }
+    rows.forEach((row) => {
+      const label = row.raw_ref || row.record_type || "record";
+      const from = row.source_name || row.provider || "未知来源";
+      const item = el("div", "item", `${label} from ${from}`);
+      box.append(item);
+    });
+  } catch (_error) {
+    if (cardId !== dashboardOpportunityId) return;
+    box.append(el("div", "error", "来源加载失败"));
+  }
+}
+
+async function loadDashboard() {
+  const [oppRes, kwRes, compRes] = await Promise.all([
+    fetch("/api/opportunities"),
+    fetch("/api/keywords"),
+    fetch("/api/competitors"),
+  ]);
+  if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
+  opportunities = await oppRes.json();
+  keywords = await kwRes.json();
+  competitors = await compRes.json();
+  if (viewMode === "dashboard") renderDashboard();
+}
+
+function setView(mode) {
+  viewMode = mode;
+  applyChrome(mode);
+  if (mode === "dashboard") {
+    loadDashboard().catch(() => {
+      const root = document.getElementById("cockpit");
+      if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
+    });
+    return;
+  }
+  if (mode === "trace") {
+    listEl.replaceChildren(el("div", "empty", "记录在下方"));
+    showTrace();
+    return;
+  }
+  if (mode === "imports") {
+    detailEl.textContent = selectedImportId ? "加载中" : "选择一个导入批次";
+    loadSources()
+      .then(() => {
+        if (selectedImportId) return openImport(selectedImportId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
+    return;
+  }
   if (mode === "items") {
-    renderList();
     detailEl.textContent = selectedId ? "加载中" : "选择一条资讯";
-    if (selectedId) openItem(selectedId);
+    refresh()
+      .then(() => {
+        if (selectedId) return openItem(selectedId);
+      })
+      .catch(() => {
+        listEl.replaceChildren(el("div", "error", "加载失败"));
+      });
     return;
   }
   if (mode === "events") {
@@ -1224,6 +1485,42 @@ async function loadOpportunities() {
   renderOpportunityList();
 }
 
+function serpFailureText(detail) {
+  if (typeof detail === "string" && detail) return detail;
+  if (detail && typeof detail === "object") {
+    const parts = [detail.google_message, detail.suggestion].filter((item) => typeof item === "string" && item);
+    if (parts.length) return parts.join(" ");
+  }
+  return "SERP 查询失败";
+}
+
+async function searchCompetitors(cluster) {
+  const button = document.getElementById("google-competitor-search");
+  if (button) button.disabled = true;
+  jobEl.textContent = "查询 SERP";
+  try {
+    const response = await fetch("/api/google-search/import-competitors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cluster_id: cluster.id,
+        query: cluster.name || "",
+        num: 10,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      jobEl.textContent = serpFailureText(data.detail);
+      return;
+    }
+    jobEl.textContent = `已导入 ${data.raw_records_created} 条 SERP 结果，生成 ${data.competitors_created} 条竞品页面草稿。`;
+  } catch (_error) {
+    jobEl.textContent = "SERP 查询失败";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function generateOpportunity(clusterId) {
   const button = document.getElementById("opportunity-generate");
   if (button) button.disabled = true;
@@ -1324,23 +1621,26 @@ function renderSourceList() {
   listEl.replaceChildren();
   if (dataSources.length === 0) {
     listEl.append(el("div", "empty", "NO SOURCE"));
-  } else {
-    dataSources.forEach((source) => {
-      const row = el("div", selectedSourceId === source.id ? "item active" : "item");
-      row.append(el("div", "title", source.name || "--"));
-      const meta = el("div", "meta");
-      meta.append(el("span", null, source.source_type || "--"));
-      meta.append(el("span", null, source.provider || "--"));
-      meta.append(el("span", null, source.region || "--"));
-      meta.append(el("span", null, source.time_range || "--"));
-      meta.append(el("span", null, source.enabled ? "enabled" : "off"));
-      row.append(meta);
-      row.dataset.id = String(source.id);
-      row.addEventListener("click", () => openSource(source.id));
-      listEl.append(row);
-    });
+    return;
   }
-  listEl.append(el("div", "hint", "Data Imports"));
+  dataSources.forEach((source) => {
+    const row = el("div", selectedSourceId === source.id ? "item active" : "item");
+    row.append(el("div", "title", source.name || "--"));
+    const meta = el("div", "meta");
+    meta.append(el("span", null, source.source_type || "--"));
+    meta.append(el("span", null, source.provider || "--"));
+    meta.append(el("span", null, source.region || "--"));
+    meta.append(el("span", null, source.time_range || "--"));
+    meta.append(el("span", null, source.enabled ? "enabled" : "off"));
+    row.append(meta);
+    row.dataset.id = String(source.id);
+    row.addEventListener("click", () => openSource(source.id));
+    listEl.append(row);
+  });
+}
+
+function renderImportList() {
+  listEl.replaceChildren();
   if (sourceImports.length === 0) {
     listEl.append(el("div", "empty", "NO IMPORT"));
     return;
@@ -1350,6 +1650,8 @@ function renderSourceList() {
     row.append(el("div", "title", batch.import_name || "--"));
     const meta = el("div", "meta");
     meta.append(el("span", null, batch.source_name || "--"));
+    meta.append(el("span", null, batch.provider || "--"));
+    meta.append(el("span", null, batch.source_type || "--"));
     meta.append(el("span", null, batch.record_type || "--"));
     meta.append(el("span", null, String(batch.row_count)));
     meta.append(el("span", null, formatTime(batch.created_at)));
@@ -1359,6 +1661,11 @@ function renderSourceList() {
     row.addEventListener("click", () => openImport(batch.id));
     listEl.append(row);
   });
+}
+
+function renderLedger() {
+  if (viewMode === "imports") renderImportList();
+  else renderSourceList();
 }
 
 function renderSourceDetail(source) {
@@ -1388,7 +1695,7 @@ async function openSource(id) {
   selectedKeywordId = null;
   selectedPageId = null;
   selectedOpportunityId = null;
-  renderSourceList();
+  renderLedger();
   const source = dataSources.find((item) => item.id === id);
   if (!source) {
     detailEl.replaceChildren(el("div", "error", "数据源不存在"));
@@ -1403,7 +1710,7 @@ async function loadSources() {
   dataSources = await response.json();
   const importsResponse = await fetch("/api/imports");
   sourceImports = importsResponse.ok ? await importsResponse.json() : [];
-  renderSourceList();
+  renderLedger();
 }
 
 function showSourceForm() {
@@ -1476,7 +1783,7 @@ function showImportForm() {
   dataSources.forEach((source) => {
     const option = document.createElement("option");
     option.value = String(source.id);
-    option.textContent = source.name;
+    option.textContent = `${source.name} · ${source.source_type || "--"} · ${source.provider || "--"}`;
     sourceSelect.append(option);
   });
   const importName = document.createElement("input");
@@ -1521,9 +1828,9 @@ function showImportForm() {
         button.disabled = false;
         return;
       }
-      jobEl.textContent = `IMPORT ${data.import_id} ROWS ${data.row_count}`;
+      jobEl.textContent = data.warning || `IMPORT ${data.import_id} ROWS ${data.row_count}`;
       await loadSources();
-      await openImport(data.import_id);
+      await openImport(data.import_id, data.warning || "");
     } catch (_error) {
       jobEl.textContent = "导入失败";
       button.disabled = false;
@@ -1532,10 +1839,10 @@ function showImportForm() {
   detailEl.append(form);
 }
 
-async function openImport(id) {
+async function openImport(id, warning) {
   selectedImportId = id;
   selectedSourceId = null;
-  renderSourceList();
+  renderLedger();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
     const response = await fetch(`/api/imports/${id}`);
@@ -1547,8 +1854,11 @@ async function openImport(id) {
     detailEl.replaceChildren();
     detailEl.append(el("div", "hint", "Data Imports"));
     detailEl.append(el("div", "headline", batch.import_name || "--"));
+    if (warning) detailEl.append(el("div", "error", warning));
     [
       ["source", batch.source_name],
+      ["provider", batch.provider],
+      ["source_type", batch.source_type],
       ["record_type", batch.record_type],
       ["row_count", batch.row_count],
       ["status", batch.status],
@@ -1570,6 +1880,8 @@ async function openImport(id) {
       const title = row.normalized_domain || row.normalized_keyword || row.normalized_title || row.normalized_url || `ROW ${row.id}`;
       item.append(el("div", "title", title));
       const meta = el("div", "meta");
+      meta.append(el("span", null, row.source_name || "--"));
+      meta.append(el("span", null, row.provider || "--"));
       meta.append(el("span", null, row.normalized_url || "--"));
       meta.append(el("span", null, row.metric_name ? `${row.metric_name} ${row.metric_value}` : "--"));
       item.append(meta);
@@ -1659,18 +1971,22 @@ function appendSourceBind(host, options) {
 }
 
 collectBtn.addEventListener("click", runCollect);
-document.getElementById("api-trace").addEventListener("click", showTrace);
-document.getElementById("view-items").addEventListener("click", () => setView("items"));
-document.getElementById("view-events").addEventListener("click", () => setView("events"));
+document.getElementById("view-dashboard").addEventListener("click", () => setView("dashboard"));
+document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));
-document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
+document.getElementById("view-admin").addEventListener("click", () => setView(ADMIN_MODES.includes(viewMode) ? viewMode : "sources"));
 document.getElementById("view-sources").addEventListener("click", () => setView("sources"));
+document.getElementById("view-imports").addEventListener("click", () => setView("imports"));
+document.getElementById("view-trace").addEventListener("click", () => setView("trace"));
+document.getElementById("view-items").addEventListener("click", () => setView("items"));
+document.getElementById("view-events").addEventListener("click", () => setView("events"));
 document.getElementById("build-events").addEventListener("click", buildEventList);
 document.getElementById("seed-keywords").addEventListener("click", seedKeywordPool);
 document.getElementById("add-competitor").addEventListener("click", showCompetitorForm);
 document.getElementById("add-source").addEventListener("click", showSourceForm);
 document.getElementById("import-csv").addEventListener("click", showImportForm);
-refresh().catch(() => {
-  listEl.replaceChildren(el("div", "error", "加载失败"));
+loadDashboard().catch(() => {
+  const root = document.getElementById("cockpit");
+  if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
 });

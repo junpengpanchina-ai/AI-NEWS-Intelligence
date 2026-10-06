@@ -1,0 +1,373 @@
+import json
+import logging
+import os
+import re
+import time
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+import httpx
+
+from app.competitors import create_competitor, domain_of
+from app.db import connect, utc_today
+from app.keywords import get_keyword_cluster
+from app.ledger import create_source_record, ensure_google_search_source
+from app.trace import record_trace
+
+GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+MANUAL_CSV_HINT = "当前 SERP_PROVIDER=manual_csv，请使用 Admin → Sources → Data Imports 导入 SERP CSV。"
+GOOGLE_403_SUGGESTION = "切换 manual_csv / Serper / DataForSEO / SerpAPI"
+_log = logging.getLogger("app.google_search")
+
+
+def redact_google_url(url: str) -> str:
+    text = str(url or "")
+    secret = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    if secret:
+        text = text.replace(secret, "[redacted]")
+    return re.sub(r"(?i)([?&]key=)[^&#\s\"]*", r"\1[redacted]", text)
+
+
+class GoogleKeyLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        secret = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+        if record.name.startswith(("httpx", "httpcore")) and (
+            "key=" in message.lower() or (secret and secret in message)
+        ):
+            return False
+        redacted = redact_google_url(message)
+        if secret and secret in redacted:
+            redacted = redacted.replace(secret, "[redacted]")
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
+        return True
+
+
+def install_google_log_redaction() -> None:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    redactor = GoogleKeyLogFilter()
+    for name in ("", "httpx", "httpcore", "app.google_search"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(item, GoogleKeyLogFilter) for item in logger.filters):
+            logger.addFilter(redactor)
+        for handler in logger.handlers:
+            if not any(isinstance(item, GoogleKeyLogFilter) for item in handler.filters):
+                handler.addFilter(redactor)
+
+
+install_google_log_redaction()
+
+
+class GoogleSearchError(Exception):
+    def __init__(self, message: str, status_code: int = 400, detail=None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.detail = message if detail is None else detail
+
+
+def serp_provider() -> str:
+    return os.getenv("SERP_PROVIDER", "manual_csv").strip().lower() or "manual_csv"
+
+
+def _require_google_provider() -> None:
+    provider = serp_provider()
+    if provider == "manual_csv":
+        raise GoogleSearchError(MANUAL_CSV_HINT, 400)
+    if provider != "google_cse":
+        raise GoogleSearchError(f"当前 SERP_PROVIDER={provider}，尚未接入。", 400)
+
+
+def _safe_upstream_text(value: str) -> str:
+    text = str(value or "")
+    for env_name in ("GOOGLE_CSE_API_KEY", "GOOGLE_CSE_CX", "SERPER_API_KEY"):
+        secret = os.getenv(env_name, "").strip()
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return redact_google_url(text)
+
+
+def _google_403_detail(response: httpx.Response) -> dict:
+    status_name = ""
+    message = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            status_name = _safe_upstream_text(error.get("status") or "")
+            message = _safe_upstream_text(error.get("message") or "")
+    return {
+        "provider": "google_cse",
+        "status_code": 403,
+        "google_status": status_name or "PERMISSION_DENIED",
+        "google_message": message or "This project does not have the access to Custom Search JSON API.",
+        "suggestion": GOOGLE_403_SUGGESTION,
+    }
+
+
+def _enabled() -> bool:
+    return os.getenv("GOOGLE_CSE_ENABLED", "").strip().lower() == "true"
+
+
+def _daily_limit() -> int:
+    raw = os.getenv("GOOGLE_CSE_DAILY_LIMIT", "80").strip() or "80"
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 80
+
+
+def _require_config() -> tuple[str, str]:
+    if not _enabled():
+        raise GoogleSearchError("Google Search 未启用。请在 .env 设置 GOOGLE_CSE_ENABLED=true")
+    key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    cx = os.getenv("GOOGLE_CSE_CX", "").strip()
+    missing = []
+    if not key:
+        missing.append("GOOGLE_CSE_API_KEY")
+    if not cx:
+        missing.append("GOOGLE_CSE_CX")
+    if missing:
+        raise GoogleSearchError("未配置 " + "、".join(missing))
+    return key, cx
+
+
+def _clamp_num(num: int) -> int:
+    try:
+        value = int(num)
+    except (TypeError, ValueError):
+        value = 10
+    if value < 1:
+        return 1
+    if value > 10:
+        return 10
+    return value
+
+
+def _take_quota() -> None:
+    limit = _daily_limit()
+    day = utc_today()
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS google_cse_usage (
+                date TEXT PRIMARY KEY,
+                count INTEGER NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT count FROM google_cse_usage WHERE date = ?",
+            (day,),
+        ).fetchone()
+        current = int(row["count"]) if row else 0
+        if current >= limit:
+            conn.rollback()
+            raise GoogleSearchError("Google Search 今日额度已用完", 429)
+        if row:
+            conn.execute(
+                "UPDATE google_cse_usage SET count = count + 1 WHERE date = ?",
+                (day,),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO google_cse_usage (date, count) VALUES (?, 1)",
+                (day,),
+            )
+        conn.commit()
+    except GoogleSearchError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _public_item(item: dict) -> dict:
+    return {
+        "title": item.get("title") or "",
+        "link": item.get("link") or "",
+        "displayLink": item.get("displayLink") or "",
+        "snippet": item.get("snippet") or "",
+    }
+
+
+def search_google(query: str, num: int = 10) -> list[dict]:
+    text = (query or "").strip()
+    if not text:
+        raise GoogleSearchError("query 不能为空")
+    size = _clamp_num(num)
+    _require_google_provider()
+    key, cx = _require_config()
+    _take_quota()
+    started = time.perf_counter()
+    status: int | str | None = None
+    try:
+        try:
+            response = httpx.get(
+                GOOGLE_SEARCH_URL,
+                params={"key": key, "cx": cx, "q": text, "num": size},
+                timeout=30,
+            )
+        except httpx.TimeoutException:
+            status = "timeout"
+            raise GoogleSearchError("Google Search 超时", 504) from None
+        except httpx.HTTPError:
+            status = 502
+            raise GoogleSearchError("Google Search 请求失败", 502) from None
+        status = response.status_code
+        if response.status_code == 403:
+            detail = _google_403_detail(response)
+            raise GoogleSearchError(str(detail["google_message"]), 403, detail=detail) from None
+        if response.status_code != 200:
+            raise GoogleSearchError("Google Search 请求失败", 502) from None
+        try:
+            payload = response.json()
+        except ValueError:
+            raise GoogleSearchError("Google Search 返回无法解析", 502) from None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [_public_item(item) for item in items if isinstance(item, dict)]
+    finally:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        status_code = status if status is not None else 500
+        host = urlsplit(GOOGLE_SEARCH_URL).hostname or "www.googleapis.com"
+        cx_present = "true" if cx else "false"
+        _log.info(
+            "Google Search query=%s num=%s status_code=%s elapsed_ms=%s host=%s cx_present=%s",
+            text,
+            size,
+            status_code,
+            elapsed_ms,
+            host,
+            cx_present,
+        )
+        record_trace(
+            "GET",
+            "external_google_search",
+            status_code,
+            elapsed_ms,
+            "external_google_search",
+            f"query={text} num={size} host={host} cx_present={cx_present}",
+        )
+
+
+def _existing_page(cluster_id: int, url: str) -> int | None:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM competitor_pages WHERE cluster_id = ? AND url = ?",
+            (cluster_id, url),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return int(row["id"])
+
+
+def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
+    text = (query or "").strip()
+    _require_google_provider()
+    cluster = get_keyword_cluster(int(cluster_id))
+    if cluster is None:
+        raise GoogleSearchError("关键词簇不存在", 404)
+    items = search_google(text, num)
+    source = ensure_google_search_source()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO source_imports (
+                source_id, import_name, source_type, record_type, original_filename,
+                row_count, status, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(source["id"]),
+                text,
+                "serp",
+                "serp_result",
+                "",
+                len(items),
+                "imported" if items else "empty",
+                "",
+                now,
+            ),
+        )
+        import_id = int(cur.lastrowid)
+        for item in items:
+            link = (item.get("link") or "").strip()
+            domain = (item.get("displayLink") or "").strip() or domain_of(link)
+            conn.execute(
+                """
+                INSERT INTO raw_source_records (
+                    import_id, source_id, record_type, raw_json, normalized_title,
+                    normalized_url, normalized_keyword, normalized_domain, metric_name,
+                    metric_value, time_range, confidence, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    import_id,
+                    int(source["id"]),
+                    "serp_result",
+                    json.dumps(item, ensure_ascii=False),
+                    item.get("title") or "",
+                    link,
+                    text,
+                    domain,
+                    "",
+                    "",
+                    "",
+                    "serp",
+                    "imported",
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    created = 0
+    for item in items:
+        link = (item.get("link") or "").strip()
+        if not link or _existing_page(int(cluster_id), link) is not None:
+            continue
+        page = create_competitor({
+            "cluster_id": int(cluster_id),
+            "url": link,
+            "domain": (item.get("displayLink") or "").strip(),
+            "title": item.get("title") or "",
+            "h1": "",
+            "page_type": "unknown",
+            "target_keyword": text,
+            "notes": item.get("snippet") or "",
+        })
+        if page is None:
+            continue
+        create_source_record({
+            "source_id": int(source["id"]),
+            "record_type": "competitor_page",
+            "linked_table": "competitor_pages",
+            "linked_id": int(page["id"]),
+            "raw_ref": link,
+            "confidence": "serp",
+        })
+        created += 1
+    return {
+        "query": text,
+        "raw_records_created": len(items),
+        "competitors_created": created,
+    }

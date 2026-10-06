@@ -225,7 +225,7 @@ def create_competitor(payload: dict) -> dict | None:
             (
                 int(payload["cluster_id"]),
                 url,
-                domain_of(url),
+                (payload.get("domain") or "").strip() or domain_of(url),
                 page["title"],
                 page["h1"],
                 page_type,

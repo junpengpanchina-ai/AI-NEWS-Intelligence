@@ -272,6 +272,7 @@ class CsvImportResult(BaseModel):
     import_id: int
     row_count: int
     status: str
+    warning: str = ""
 
 
 class ImportOut(BaseModel):
@@ -286,6 +287,7 @@ class ImportOut(BaseModel):
     notes: str
     created_at: str
     source_name: str = ""
+    provider: str = ""
 
 
 class RawRecordOut(BaseModel):
@@ -304,10 +306,24 @@ class RawRecordOut(BaseModel):
     confidence: str
     status: str
     created_at: str
+    source_name: str = ""
+    provider: str = ""
+    source_type: str = ""
 
 
 class ImportDetailOut(ImportOut):
     records: list[RawRecordOut]
+
+
+class ImportSourceIn(BaseModel):
+    source_id: int
+
+
+class ImportSourceResult(BaseModel):
+    import_id: int
+    old_source_id: int
+    new_source_id: int
+    updated_records: int
 
 
 class RawBindIn(BaseModel):
@@ -316,3 +332,33 @@ class RawBindIn(BaseModel):
     linked_id: int
     record_type: str
     confidence: str = "medium"
+
+
+class GoogleSearchQueryIn(BaseModel):
+    query: str
+    num: int = 10
+
+
+class GoogleSearchItem(BaseModel):
+    title: str
+    link: str
+    displayLink: str
+    snippet: str
+
+
+class GoogleSearchQueryOut(BaseModel):
+    query: str
+    count: int
+    items: list[GoogleSearchItem]
+
+
+class GoogleSearchImportIn(BaseModel):
+    cluster_id: int
+    query: str
+    num: int = 10
+
+
+class GoogleSearchImportOut(BaseModel):
+    query: str
+    raw_records_created: int
+    competitors_created: int
