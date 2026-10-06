@@ -8,3 +8,9 @@ services:
       - ./frontend:/app/frontend
     env_file:
       - .env
+    environment:
+      SERP_PROVIDER: ${SERP_PROVIDER:-manual_csv}
+      SERPER_ENABLED: ${SERPER_ENABLED:-false}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      SERPER_DAILY_LIMIT: ${SERPER_DAILY_LIMIT:-100}
+      SERPER_BASE_URL: ${SERPER_BASE_URL:-https://google.serper.dev}
