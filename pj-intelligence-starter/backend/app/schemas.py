@@ -364,6 +364,8 @@ class RawBindIn(BaseModel):
 class GoogleSearchQueryIn(BaseModel):
     query: str
     num: int = 10
+    gl: str = "us"
+    hl: str = "en"
 
 
 class GoogleSearchItem(BaseModel):
@@ -371,9 +373,11 @@ class GoogleSearchItem(BaseModel):
     link: str
     displayLink: str
     snippet: str
+    rank: int | None = None
 
 
 class GoogleSearchQueryOut(BaseModel):
+    provider: str
     query: str
     count: int
     items: list[GoogleSearchItem]
@@ -383,9 +387,13 @@ class GoogleSearchImportIn(BaseModel):
     cluster_id: int
     query: str
     num: int = 10
+    gl: str = "us"
+    hl: str = "en"
 
 
 class GoogleSearchImportOut(BaseModel):
+    provider: str
     query: str
     raw_records_created: int
     competitors_created: int
+    skipped: int = 0

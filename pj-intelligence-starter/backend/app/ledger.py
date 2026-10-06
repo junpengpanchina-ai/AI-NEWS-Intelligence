@@ -73,6 +73,30 @@ def seed_data_sources() -> None:
     ensure_google_search_source()
 
 
+def ensure_serper_source() -> dict:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM data_sources WHERE name = ?",
+            ("Serper Google SERP",),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is not None:
+        found = get_source(int(row["id"]))
+        if found is not None:
+            return found
+    return create_source({
+        "name": "Serper Google SERP",
+        "source_type": "serp",
+        "provider": "Serper",
+        "url": "https://google.serper.dev/search",
+        "data_format": "json",
+        "notes": "SERP results from Serper",
+        "enabled": 1,
+    })
+
+
 def ensure_google_search_source() -> dict:
     conn = connect()
     try:

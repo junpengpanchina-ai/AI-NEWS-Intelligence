@@ -11,7 +11,7 @@ import httpx
 from app.competitors import create_competitor, domain_of
 from app.db import connect, utc_today
 from app.keywords import get_keyword_cluster
-from app.ledger import create_source_record, ensure_google_search_source
+from app.ledger import create_source_record, ensure_google_search_source, ensure_serper_source
 from app.trace import record_trace
 
 GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
@@ -31,14 +31,20 @@ def redact_google_url(url: str) -> str:
 class GoogleKeyLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
-        secret = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+        secrets = [
+            os.getenv(name, "").strip()
+            for name in ("GOOGLE_CSE_API_KEY", "SERPER_API_KEY")
+        ]
+        secrets = [item for item in secrets if item]
+        lowered = message.lower()
         if record.name.startswith(("httpx", "httpcore")) and (
-            "key=" in message.lower() or (secret and secret in message)
+            "key=" in lowered or "x-api-key" in lowered or any(secret in message for secret in secrets)
         ):
             return False
         redacted = redact_google_url(message)
-        if secret and secret in redacted:
-            redacted = redacted.replace(secret, "[redacted]")
+        for secret in secrets:
+            if secret in redacted:
+                redacted = redacted.replace(secret, "[redacted]")
         if redacted != message:
             record.msg = redacted
             record.args = None
@@ -49,7 +55,7 @@ def install_google_log_redaction() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     redactor = GoogleKeyLogFilter()
-    for name in ("", "httpx", "httpcore", "app.google_search"):
+    for name in ("", "httpx", "httpcore", "app.google_search", "app.serper"):
         logger = logging.getLogger(name)
         if not any(isinstance(item, GoogleKeyLogFilter) for item in logger.filters):
             logger.addFilter(redactor)
@@ -114,7 +120,13 @@ def _google_provider_row() -> dict:
 def provider_health() -> dict:
     serper_enabled = _env_flag("SERPER_ENABLED")
     serper_configured = _env_set("SERPER_API_KEY")
-    serper_ready = serper_enabled and serper_configured
+    serper_ready = serp_provider() == "serper" and serper_enabled and serper_configured
+    if serper_ready:
+        serper_message = "Serper is the active SERP provider"
+    elif serper_enabled and serper_configured:
+        serper_message = "Set SERP_PROVIDER=serper"
+    else:
+        serper_message = "Set SERPER_ENABLED=true and SERPER_API_KEY"
     return {
         "serp_provider": serp_provider(),
         "providers": [
@@ -133,7 +145,7 @@ def provider_health() -> dict:
                 "enabled": serper_enabled,
                 "configured": serper_configured,
                 "status": "ready" if serper_ready else "not_configured",
-                "message": "Serper is configured" if serper_ready else "Set SERPER_ENABLED=true and SERPER_API_KEY",
+                "message": serper_message,
             },
             {
                 "name": "GSC",
@@ -415,28 +427,43 @@ def search_google(query: str, num: int = 10) -> list[dict]:
         )
 
 
-def _existing_page(cluster_id: int, url: str) -> int | None:
+def _url_exists(url: str) -> bool:
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT id FROM competitor_pages WHERE cluster_id = ? AND url = ?",
-            (cluster_id, url),
+            "SELECT id FROM competitor_pages WHERE url = ?",
+            (url,),
         ).fetchone()
     finally:
         conn.close()
-    if row is None:
-        return None
-    return int(row["id"])
+    return row is not None
 
 
-def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
+def _draft_notes(item: dict) -> str:
+    snippet = (item.get("snippet") or "").strip()
+    rank = item.get("rank")
+    if not rank:
+        return snippet
+    rank_line = f"rank {rank}"
+    return f"{snippet}\n{rank_line}" if snippet else rank_line
+
+
+def import_competitors(cluster_id: int, query: str, num: int = 10, gl: str = "us", hl: str = "en") -> dict:
+    from app.serp import search_serp
+
     text = (query or "").strip()
-    _require_google_provider()
     cluster = get_keyword_cluster(int(cluster_id))
     if cluster is None:
         raise GoogleSearchError("关键词簇不存在", 404)
-    items = search_google(text, num)
-    source = ensure_google_search_source()
+    result = search_serp(text, num, gl, hl)
+    items = result.get("items") or []
+    provider = str(result.get("provider") or "")
+    if provider == "serper":
+        source = ensure_serper_source()
+    elif provider == "google_cse":
+        source = ensure_google_search_source()
+    else:
+        raise GoogleSearchError(f"当前 SERP_PROVIDER={provider}，尚未接入。", 400)
     now = datetime.now(timezone.utc).isoformat()
     conn = connect()
     try:
@@ -463,6 +490,7 @@ def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
         for item in items:
             link = (item.get("link") or "").strip()
             domain = (item.get("displayLink") or "").strip() or domain_of(link)
+            rank = item.get("rank")
             conn.execute(
                 """
                 INSERT INTO raw_source_records (
@@ -480,10 +508,10 @@ def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
                     link,
                     text,
                     domain,
+                    "rank" if rank else "",
+                    str(rank) if rank else "",
                     "",
-                    "",
-                    "",
-                    "serp",
+                    provider or "serp",
                     "imported",
                     now,
                 ),
@@ -493,10 +521,14 @@ def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
         conn.close()
 
     created = 0
+    skipped = 0
+    seen = set()
     for item in items:
         link = (item.get("link") or "").strip()
-        if not link or _existing_page(int(cluster_id), link) is not None:
+        if not link or link in seen or _url_exists(link):
+            skipped += 1
             continue
+        seen.add(link)
         page = create_competitor({
             "cluster_id": int(cluster_id),
             "url": link,
@@ -505,9 +537,10 @@ def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
             "h1": "",
             "page_type": "unknown",
             "target_keyword": text,
-            "notes": item.get("snippet") or "",
+            "notes": _draft_notes(item),
         })
         if page is None:
+            skipped += 1
             continue
         create_source_record({
             "source_id": int(source["id"]),
@@ -515,11 +548,13 @@ def import_competitors(cluster_id: int, query: str, num: int = 10) -> dict:
             "linked_table": "competitor_pages",
             "linked_id": int(page["id"]),
             "raw_ref": link,
-            "confidence": "serp",
+            "confidence": provider or "serp",
         })
         created += 1
     return {
+        "provider": provider,
         "query": text,
         "raw_records_created": len(items),
         "competitors_created": created,
+        "skipped": skipped,
     }

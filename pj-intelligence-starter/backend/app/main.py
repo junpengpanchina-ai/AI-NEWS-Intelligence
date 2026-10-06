@@ -39,8 +39,8 @@ from app.google_search import (
     import_competitors,
     install_google_log_redaction,
     provider_health,
-    search_google,
 )
+from app.serp import search_serp
 from app.inbox import (
     bind_raw_record,
     get_import,
@@ -611,19 +611,27 @@ def raw_records(source_id: int | None = None, record_type: str | None = None):
     return list_raw_records(source_id, record_type)
 
 
-@app.post("/api/google-search/query", response_model=GoogleSearchQueryOut)
-def google_search_query(payload: GoogleSearchQueryIn):
+def _run_serp_query(payload: GoogleSearchQueryIn):
     try:
-        items = search_google(payload.query, payload.num)
+        return search_serp(payload.query, payload.num, payload.gl, payload.hl)
     except GoogleSearchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return {"query": payload.query.strip(), "count": len(items), "items": items}
+
+
+@app.post("/api/google-search/query", response_model=GoogleSearchQueryOut)
+def google_search_query(payload: GoogleSearchQueryIn):
+    return _run_serp_query(payload)
+
+
+@app.post("/api/serp/query", response_model=GoogleSearchQueryOut)
+def serp_query(payload: GoogleSearchQueryIn):
+    return _run_serp_query(payload)
 
 
 @app.post("/api/google-search/import-competitors", response_model=GoogleSearchImportOut)
 def google_search_import(payload: GoogleSearchImportIn):
     try:
-        return import_competitors(payload.cluster_id, payload.query, payload.num)
+        return import_competitors(payload.cluster_id, payload.query, payload.num, payload.gl, payload.hl)
     except GoogleSearchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

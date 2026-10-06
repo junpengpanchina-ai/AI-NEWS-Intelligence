@@ -10,12 +10,13 @@ _traces: deque[dict] = deque(maxlen=100)
 
 def _safe_note(note: str) -> str:
     text = note or ""
-    for env_name in ("LLM_API_KEY", "GOOGLE_CSE_API_KEY"):
+    for env_name in ("LLM_API_KEY", "GOOGLE_CSE_API_KEY", "SERPER_API_KEY"):
         secret = os.getenv(env_name, "").strip()
         if secret:
             text = text.replace(secret, "[redacted]")
     text = re.sub(r"(?i)bearer\s+\S+", "Bearer [redacted]", text)
     text = re.sub(r"(?i)authorization\s*[:=]\s*\S+", "Authorization [redacted]", text)
+    text = re.sub(r"(?i)x-api-key\s*[:=]\s*\S+", "X-API-KEY [redacted]", text)
     text = re.sub(r"(?i)([?&]key=)[^&\s]+", r"\1[redacted]", text)
     return text[:500]
 

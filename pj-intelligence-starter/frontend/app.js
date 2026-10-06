@@ -1713,7 +1713,12 @@ async function searchCompetitors(cluster) {
       jobEl.textContent = serpFailureText(data.detail);
       return;
     }
-    jobEl.textContent = `已导入 ${data.raw_records_created} 条 SERP 结果，生成 ${data.competitors_created} 条竞品页面草稿。`;
+    const skipped = data.skipped ?? 0;
+    if (data.provider === "serper") {
+      jobEl.textContent = `Serper 已导入 ${data.raw_records_created} 条 SERP，生成 ${data.competitors_created} 条竞品草稿，跳过 ${skipped} 条重复 URL。`;
+    } else {
+      jobEl.textContent = `已导入 ${data.raw_records_created} 条 SERP 结果，生成 ${data.competitors_created} 条竞品页面草稿。`;
+    }
   } catch (_error) {
     jobEl.textContent = "SERP 查询失败";
   } finally {
