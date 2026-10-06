@@ -275,6 +275,13 @@ class CsvImportResult(BaseModel):
     warning: str = ""
 
 
+class UploadCsvResult(BaseModel):
+    import_id: int
+    record_type: str
+    row_count: int
+    status: str
+
+
 class ImportOut(BaseModel):
     id: int
     source_id: int

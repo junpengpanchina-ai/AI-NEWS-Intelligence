@@ -879,8 +879,31 @@ function paymentStatus() {
   return namedSignalStatus(dashboardFeeds.payment, dashboardFeeds.imports, /dodo|stripe|nexi|razorpay/);
 }
 
+function realTrafficRows() {
+  return dashboardFeeds.traffic.filter((row) => !isSampleRaw(row));
+}
+
+function trafficFact(row) {
+  let raw = {};
+  try {
+    raw = JSON.parse(row.raw_json || "{}");
+  } catch (_error) {
+    raw = {};
+  }
+  return {
+    domain: row.normalized_domain || raw.domain || "--",
+    traffic: raw.traffic || (row.metric_name === "traffic" ? row.metric_value : "") || "--",
+    growth: raw.traffic_growth || "--",
+  };
+}
+
 function trafficStatus() {
-  return namedSignalStatus(dashboardFeeds.traffic, dashboardFeeds.imports, /sitedata|similarweb|ahrefs|dr growth|dr_growth/);
+  const real = realTrafficRows();
+  const sample = dashboardFeeds.traffic.filter(isSampleRaw);
+  if (real.length >= 10) return "Ready";
+  if (real.length >= 1) return "Partial";
+  if (sample.length) return "Sample Only";
+  return "Missing";
 }
 
 function validationStatus() {
@@ -911,7 +934,8 @@ function decisionGaps() {
   const competitorReal = realPages(competitors).length;
   if (competitorReal < 5) gaps.push("真实竞品页面不足");
   if (paymentStatus() !== "Ready") gaps.push("支付信号缺失");
-  if (trafficStatus() !== "Ready") gaps.push("流量信号缺失");
+  if (trafficStatus() === "Missing" || trafficStatus() === "Sample Only") gaps.push("流量信号缺失");
+  else if (trafficStatus() === "Partial") gaps.push("流量信号不足");
   return gaps;
 }
 
@@ -1023,7 +1047,14 @@ function renderDashboard() {
     if (status === "Ready") copy = "已有真实来源，可以进入判断。";
     else if (slotName === "SERP Top 10" && status === "Partial") copy = "SERP Top 10 数据不足";
     else if (slotName === "Competitor Pages" && status === "Partial") copy = "真实竞品页面不足";
+    else if (slotName === "Traffic Signal" && status === "Partial") copy = "真实流量不足 10 条";
     card.append(el("p", "clamp", copy));
+    if (slotName === "Traffic Signal" && (status === "Partial" || status === "Ready")) {
+      realTrafficRows().slice(0, 3).forEach((row) => {
+        const fact = trafficFact(row);
+        card.append(el("div", "clamp", `${fact.domain} · traffic ${fact.traffic} · growth ${fact.growth}`));
+      });
+    }
     holes.append(card);
   });
   root.append(holes);
@@ -2040,15 +2071,47 @@ function showImportForm() {
   });
   recordType.value = "payment_signal";
   const csvText = document.createElement("textarea");
-  csvText.required = true;
   csvText.placeholder = "csv_text";
   csvText.rows = 8;
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".csv,text/csv";
+  const upload = document.createElement("button");
+  upload.type = "button";
+  upload.textContent = "上传 CSV 文件";
   const notes = document.createElement("textarea");
   notes.placeholder = "notes";
   const button = document.createElement("button");
   button.type = "submit";
   button.textContent = "导入";
-  [sourceSelect, importName, recordType, csvText, notes, button].forEach((node) => form.append(node));
+  [sourceSelect, importName, recordType, fileInput, upload, csvText, notes, button].forEach((node) => form.append(node));
+  upload.addEventListener("click", async () => {
+    if (!fileInput.files || !fileInput.files[0]) {
+      jobEl.textContent = "请选择 CSV 文件";
+      return;
+    }
+    upload.disabled = true;
+    const body = new FormData();
+    body.append("file", fileInput.files[0]);
+    body.append("source_id", sourceSelect.value);
+    body.append("record_type", recordType.value);
+    body.append("import_name", importName.value.trim());
+    try {
+      const response = await fetch("/api/imports/upload-csv", { method: "POST", body });
+      const data = await response.json();
+      if (!response.ok) {
+        jobEl.textContent = typeof data.detail === "string" ? data.detail : "导入失败";
+        upload.disabled = false;
+        return;
+      }
+      jobEl.textContent = `IMPORT ${data.import_id} ROWS ${data.row_count}`;
+      await loadSources();
+      await openImport(data.import_id, "");
+    } catch (_error) {
+      jobEl.textContent = "导入失败";
+      upload.disabled = false;
+    }
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     button.disabled = true;

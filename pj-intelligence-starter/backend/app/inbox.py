@@ -65,6 +65,31 @@ def _header_key(value: str) -> str:
     return (value or "").strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def _first_value(raw: dict, names: tuple[str, ...]) -> str:
+    for name in names:
+        value = str(raw.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def site_fields(raw: dict, record_type: str = "") -> dict:
+    url = _first_value(raw, ("url", "link", "page", "page_url"))
+    domain = _first_value(raw, ("domain", "site", "website", "host")) or _domain_of(url)
+    source = _first_value(raw, ("source",))
+    if not source and record_type == "traffic_signal":
+        source = "SiteData Manual Import"
+    return {
+        "domain": domain,
+        "url": url,
+        "traffic": _first_value(raw, ("traffic", "visits", "monthly_visits", "estimated_traffic")),
+        "traffic_growth": _first_value(raw, ("traffic_growth", "growth", "growth_rate", "mom_growth")),
+        "rank": _first_value(raw, ("rank", "ranking", "position")),
+        "source": source,
+        "month": _first_value(raw, ("month", "date", "period", "time_range")),
+    }
+
+
 def _domain_of(url: str) -> str:
     text = (url or "").strip()
     if not text:
@@ -210,6 +235,20 @@ def import_csv(payload: dict) -> dict:
         import_id = int(cur.lastrowid)
         for raw in rows:
             normalized = _normalize(raw)
+            fields = site_fields(raw, record_type)
+            if fields["domain"]:
+                normalized["normalized_domain"] = fields["domain"]
+            if fields["url"]:
+                normalized["normalized_url"] = fields["url"]
+            if fields["month"]:
+                normalized["time_range"] = fields["month"]
+            if fields["traffic"]:
+                normalized["metric_name"] = "traffic"
+                normalized["metric_value"] = fields["traffic"]
+            stored = dict(raw)
+            for key, value in fields.items():
+                if value:
+                    stored[key] = value
             conn.execute(
                 """
                 INSERT INTO raw_source_records (
@@ -222,7 +261,7 @@ def import_csv(payload: dict) -> dict:
                     import_id,
                     int(payload["source_id"]),
                     record_type,
-                    json.dumps(raw, ensure_ascii=False),
+                    json.dumps(stored, ensure_ascii=False),
                     normalized["normalized_title"],
                     normalized["normalized_url"],
                     normalized["normalized_keyword"],
@@ -243,6 +282,35 @@ def import_csv(payload: dict) -> dict:
         "row_count": len(rows),
         "status": status,
         "warning": source_name_warning(import_name, source),
+    }
+
+
+UPLOAD_RECORD_TYPES = {"traffic_signal", "payment_signal", "keyword_signal", "serp_result"}
+
+
+def import_uploaded_csv(source_id: int, record_type: str, import_name: str, filename: str, raw_bytes: bytes) -> dict:
+    kind = (record_type or "").strip()
+    if kind not in UPLOAD_RECORD_TYPES:
+        raise ValueError("record_type 不在允许列表中")
+    if not raw_bytes:
+        raise ValueError("CSV 文件为空")
+    try:
+        csv_text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV 需要是 UTF-8 或 UTF-8-SIG") from exc
+    name = (import_name or "").strip() or (filename or "").strip() or "CSV import"
+    result = import_csv({
+        "source_id": source_id,
+        "import_name": name,
+        "record_type": kind,
+        "csv_text": csv_text,
+        "original_filename": (filename or "").strip(),
+    })
+    return {
+        "import_id": result["import_id"],
+        "record_type": kind,
+        "row_count": result["row_count"],
+        "status": result["status"],
     }
 
 

@@ -3,7 +3,7 @@ import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 
 from app.crawler import collect
@@ -45,6 +45,7 @@ from app.inbox import (
     bind_raw_record,
     get_import,
     import_csv,
+    import_uploaded_csv,
     list_imports,
     list_raw_records,
     promote_serp_competitors,
@@ -111,6 +112,7 @@ from app.schemas import (
     LlmSmokeIn,
     CsvImportIn,
     CsvImportResult,
+    UploadCsvResult,
     ImportDetailOut,
     ImportOut,
     ImportSourceIn,
@@ -551,6 +553,22 @@ def source_record_from_raw(payload: RawBindIn):
 def upload_csv(payload: CsvImportIn):
     try:
         return import_csv(payload.model_dump())
+    except ValueError as exc:
+        status = 404 if str(exc) == "数据源不存在" else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/api/imports/upload-csv", response_model=UploadCsvResult)
+async def upload_csv_file(
+    file: UploadFile = File(...),
+    source_id: int = Form(...),
+    record_type: str = Form(...),
+    import_name: str = Form(""),
+):
+    raw_bytes = await file.read()
+    filename = (file.filename or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    try:
+        return import_uploaded_csv(source_id, record_type, import_name, filename, raw_bytes)
     except ValueError as exc:
         status = 404 if str(exc) == "数据源不存在" else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
