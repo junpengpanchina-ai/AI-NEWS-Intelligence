@@ -33,7 +33,14 @@ from app.competitors import (
     list_competitors,
     save_competitor_analysis,
 )
-from app.google_search import GoogleSearchError, import_competitors, install_google_log_redaction, search_google
+from app.google_search import (
+    GoogleSearchError,
+    check_google_cse,
+    import_competitors,
+    install_google_log_redaction,
+    provider_health,
+    search_google,
+)
 from app.inbox import (
     bind_raw_record,
     get_import,
@@ -98,6 +105,7 @@ from app.schemas import (
     KeywordSeedOut,
     OpportunityAnalysisOut,
     OpportunityOut,
+    ProviderHealthOut,
     CsvImportIn,
     CsvImportResult,
     ImportDetailOut,
@@ -585,6 +593,17 @@ def import_detail(import_id: int):
     if detail is None:
         raise HTTPException(status_code=404, detail="导入批次不存在")
     return detail
+
+
+@app.get("/api/providers/health", response_model=ProviderHealthOut)
+def providers_health():
+    return provider_health()
+
+
+@app.post("/api/providers/google-cse/check", response_model=ProviderHealthOut)
+def providers_google_check():
+    check_google_cse()
+    return provider_health()
 
 
 @app.get("/api/raw-records", response_model=list[RawRecordOut])

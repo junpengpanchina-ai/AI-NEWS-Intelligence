@@ -73,6 +73,158 @@ def serp_provider() -> str:
     return os.getenv("SERP_PROVIDER", "manual_csv").strip().lower() or "manual_csv"
 
 
+_last_google_health: dict | None = None
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() == "true"
+
+
+def _env_set(name: str) -> bool:
+    return bool(os.getenv(name, "").strip())
+
+
+def _google_provider_row() -> dict:
+    enabled = _enabled()
+    configured = _env_set("GOOGLE_CSE_API_KEY") and _env_set("GOOGLE_CSE_CX")
+    if enabled and configured and _last_google_health:
+        row = dict(_last_google_health)
+        row["enabled"] = True
+        row["configured"] = True
+        return row
+    if not enabled or not configured:
+        return {
+            "name": "Google CSE",
+            "type": "serp",
+            "enabled": enabled,
+            "configured": configured,
+            "status": "not_configured",
+            "message": "Set GOOGLE_CSE_ENABLED=true, GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX",
+        }
+    return {
+        "name": "Google CSE",
+        "type": "serp",
+        "enabled": True,
+        "configured": True,
+        "status": "unchecked",
+        "message": "尚未检测。点击检测后才会请求 Google。",
+    }
+
+
+def provider_health() -> dict:
+    serper_enabled = _env_flag("SERPER_ENABLED")
+    serper_configured = _env_set("SERPER_API_KEY")
+    serper_ready = serper_enabled and serper_configured
+    return {
+        "serp_provider": serp_provider(),
+        "providers": [
+            _google_provider_row(),
+            {
+                "name": "Manual CSV",
+                "type": "serp",
+                "enabled": True,
+                "configured": True,
+                "status": "ready",
+                "message": "Use Admin → Sources → Data Imports to import SERP CSV",
+            },
+            {
+                "name": "Serper",
+                "type": "serp",
+                "enabled": serper_enabled,
+                "configured": serper_configured,
+                "status": "ready" if serper_ready else "not_configured",
+                "message": "Serper is configured" if serper_ready else "Set SERPER_ENABLED=true and SERPER_API_KEY",
+            },
+            {
+                "name": "GSC",
+                "type": "validation",
+                "enabled": False,
+                "configured": False,
+                "status": "planned",
+                "message": "planned",
+            },
+            {
+                "name": "GA4",
+                "type": "validation",
+                "enabled": False,
+                "configured": False,
+                "status": "planned",
+                "message": "planned",
+            },
+        ],
+    }
+
+
+def check_google_cse() -> dict:
+    global _last_google_health
+    enabled = _enabled()
+    key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    cx = os.getenv("GOOGLE_CSE_CX", "").strip()
+    if not enabled or not key or not cx:
+        _last_google_health = None
+        return _google_provider_row()
+    started = time.perf_counter()
+    status_code: int | str | None = None
+    row = {
+        "name": "Google CSE",
+        "type": "serp",
+        "enabled": True,
+        "configured": True,
+        "status": "blocked",
+        "message": "Google Search 请求失败",
+        "action": "Use manual_csv or configure Serper/DataForSEO/SerpAPI",
+    }
+    try:
+        try:
+            response = httpx.get(
+                GOOGLE_SEARCH_URL,
+                params={"key": key, "cx": cx, "q": "healthcheck", "num": 1},
+                timeout=30,
+            )
+        except httpx.TimeoutException:
+            status_code = "timeout"
+            row["message"] = "Google Search 超时"
+            row["last_status_code"] = None
+        except httpx.HTTPError:
+            status_code = 502
+            row["last_status_code"] = 502
+        else:
+            status_code = response.status_code
+            row["last_status_code"] = response.status_code
+            if response.status_code == 200:
+                row["status"] = "ready"
+                row["message"] = "Google CSE responded"
+                row.pop("action", None)
+            elif response.status_code == 403:
+                detail = _google_403_detail(response)
+                row["status"] = "blocked"
+                row["message"] = str(detail["google_message"])
+            else:
+                row["status"] = "blocked"
+    finally:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        host = urlsplit(GOOGLE_SEARCH_URL).hostname or "www.googleapis.com"
+        _log.info(
+            "Google Search query=%s num=%s status_code=%s elapsed_ms=%s host=%s cx_present=%s",
+            "healthcheck",
+            1,
+            status_code if status_code is not None else 500,
+            elapsed_ms,
+            host,
+            "true",
+        )
+        record_trace(
+            "GET",
+            "external_google_search",
+            status_code if status_code is not None else 500,
+            elapsed_ms,
+            "external_google_search",
+            f"query=healthcheck num=1 host={host} cx_present=true",
+        )
+    _last_google_health = row
+    return row
+
+
 def _require_google_provider() -> None:
     provider = serp_provider()
     if provider == "manual_csv":

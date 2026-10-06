@@ -154,6 +154,68 @@ body[data-focus="work"] #signals {
   grid-column: 1 / -1;
 }
 
+.slot-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.slot-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.slot-status {
+  color: var(--dim);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.slot-status.partial,
+.slot-status.sample-only {
+  color: var(--amber);
+}
+
+.slot-status.ready {
+  color: var(--green);
+}
+
+.slot-status.blocked,
+.slot-status.unchecked,
+.slot-status.not_configured,
+.slot-status.planned {
+  color: var(--amber);
+}
+
+.sample-tag {
+  color: var(--amber);
+  border: 1px solid #6d5a2c;
+  padding: 1px 5px;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.import-templates {
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.template-name {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.template-csv {
+  margin: 2px 0 0;
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+
 .deck,
 .cockpit-card {
   min-height: 0;
@@ -540,6 +602,10 @@ h2 {
   #cockpit {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
+  }
+
+  .slot-grid {
+    grid-template-columns: 1fr;
   }
 
   .metrics {

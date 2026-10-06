@@ -23,6 +23,13 @@ let selectedSourceId = null;
 let selectedImportId = null;
 let viewMode = "dashboard";
 let dashboardOpportunityId = null;
+let dashboardFeeds = {
+  imports: [],
+  serp: [],
+  payment: [],
+  traffic: [],
+  keywords: [],
+};
 let analyzeToken = 0;
 let timerId = null;
 
@@ -700,7 +707,7 @@ async function seedKeywordPool() {
   }
 }
 
-const ADMIN_MODES = ["sources", "imports", "trace", "items", "events"];
+const ADMIN_MODES = ["health", "sources", "imports", "trace", "items", "events"];
 const VERDICT_RANK = { Build: 0, Research: 1, Observe: 2, Reject: 3 };
 const COPYABLE_TYPES = ["tutorial", "api_docs", "comparison"];
 const EVIDENCE_GAP = "证据不足：当前只能作为 Research / Observe，不能作为 Build 最终依据。";
@@ -716,6 +723,7 @@ function applyChrome(mode) {
   document.getElementById("view-keywords").classList.toggle("on", mode === "keywords");
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
   document.getElementById("view-admin").classList.toggle("on", admin);
+  document.getElementById("view-health").classList.toggle("on", mode === "health");
   document.getElementById("view-sources").classList.toggle("on", mode === "sources");
   document.getElementById("view-imports").classList.toggle("on", mode === "imports");
   document.getElementById("view-trace").classList.toggle("on", mode === "trace");
@@ -731,6 +739,7 @@ function applyChrome(mode) {
     opportunities: "OPPORTUNITIES",
     keywords: "KEYWORDS",
     competitors: "COMPETITORS",
+    health: "PROVIDER HEALTH",
     sources: "SOURCES",
     imports: "DATA IMPORTS",
     trace: "API TRACE",
@@ -754,8 +763,160 @@ function lacksSample(card) {
   return Number(card.competitor_count) === 0 || reason.includes("样本不足") || reason.includes("来源不足");
 }
 
+function hostOf(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "";
+  try {
+    const url = text.includes("://") ? new URL(text) : new URL(`https://${text}`);
+    return url.hostname.replace(/^www\./, "");
+  } catch (_error) {
+    return text.replace(/^www\./, "").split("/")[0];
+  }
+}
+
+function isSampleDomain(value) {
+  const host = hostOf(value);
+  return host === "example.com" || host === "test.com" || host.endsWith(".example.com") || host.endsWith(".test.com");
+}
+
+function isSampleText(value) {
+  const text = String(value || "").toLowerCase();
+  return ["test", "demo", "draft check", "browser form", "sample"].some((token) => text.includes(token));
+}
+
+function isSamplePage(page) {
+  if (!page) return false;
+  return isSampleDomain(page.domain) || isSampleDomain(page.url) || isSampleText(page.title) || isSampleText(page.notes);
+}
+
+function isSampleRaw(row) {
+  if (!row) return false;
+  return isSampleDomain(row.normalized_domain) || isSampleDomain(row.normalized_url) || isSampleText(row.normalized_title) || isSampleText(row.raw_json);
+}
+
+function sourceBlob(row) {
+  return `${row.source_name || ""} ${row.provider || ""} ${row.source_type || ""} ${row.record_type || ""}`.toLowerCase();
+}
+
+function realPages(pages) {
+  return pages.filter((page) => !isSamplePage(page));
+}
+
+function clusterPages(card) {
+  if (!card) return [];
+  return competitors.filter((page) => page.cluster_id === card.cluster_id);
+}
+
+function sampleBackedBuild(card) {
+  if (!card || card.verdict !== "Build") return false;
+  const related = clusterPages(card);
+  if (realPages(related).length > 0) return false;
+  return related.some(isSamplePage) || isSampleDomain(card.best_competitor_domain) || isSampleText(card.best_competitor_domain);
+}
+
+function displayVerdict(card) {
+  if (sampleBackedBuild(card)) return "Research / Evidence Missing";
+  return card.verdict || "--";
+}
+
+function searchDemandStatus() {
+  const external = dashboardFeeds.imports.filter((batch) => (
+    /google trends|search console|keyword tool|google_trends|search_console|keyword_tool/.test(sourceBlob(batch))
+    && !isSampleText(batch.import_name)
+    && Number(batch.row_count) > 0
+  ));
+  const realRows = dashboardFeeds.keywords.filter((row) => !isSampleRaw(row));
+  if (external.length || realRows.length) return "Ready";
+  if (keywords.length) return "Partial";
+  return "Missing";
+}
+
+function serpStatus() {
+  const real = dashboardFeeds.serp.filter((row) => !isSampleRaw(row));
+  const sample = dashboardFeeds.serp.filter(isSampleRaw);
+  if (real.length >= 10) return "Ready";
+  if (real.length >= 5) return "Partial";
+  if (real.length > 0) return "Partial";
+  if (sample.length) return "Sample Only";
+  return "Missing";
+}
+
+function competitorSlotStatus(pages) {
+  const real = realPages(pages);
+  const sample = pages.filter(isSamplePage);
+  if (real.length >= 5) return "Ready";
+  if (real.length >= 3) return "Partial";
+  if (real.length > 0) return "Partial";
+  if (sample.length) return "Sample Only";
+  return "Missing";
+}
+
+function namedSignalStatus(rows, imports, pattern) {
+  const matched = imports.filter((batch) => pattern.test(sourceBlob(batch)));
+  const realRows = rows.filter((row) => !isSampleRaw(row));
+  const sampleRows = rows.filter(isSampleRaw);
+  const realImports = matched.filter((batch) => !isSampleText(batch.import_name) && Number(batch.row_count) > 0);
+  if (realRows.length || realImports.length) return "Ready";
+  if (sampleRows.length || matched.some((batch) => isSampleText(batch.import_name) || Number(batch.row_count) > 0)) return "Sample Only";
+  return "Missing";
+}
+
+function paymentStatus() {
+  return namedSignalStatus(dashboardFeeds.payment, dashboardFeeds.imports, /dodo|stripe|nexi|razorpay/);
+}
+
+function trafficStatus() {
+  return namedSignalStatus(dashboardFeeds.traffic, dashboardFeeds.imports, /sitedata|similarweb|ahrefs|dr growth|dr_growth/);
+}
+
+function validationStatus() {
+  const matched = dashboardFeeds.imports.filter((batch) => /search console|ga4|google analytics|signup|payment validation/.test(sourceBlob(batch)) || batch.source_type === "search_console");
+  const real = matched.filter((batch) => !isSampleText(batch.import_name) && Number(batch.row_count) > 0);
+  if (real.length) return "Ready";
+  if (matched.length) return "Sample Only";
+  return "Missing";
+}
+
+function evidenceSlots(card) {
+  const pages = card ? clusterPages(card) : competitors;
+  return [
+    ["Search Demand", searchDemandStatus()],
+    ["SERP Top 10", serpStatus()],
+    ["Competitor Pages", competitorSlotStatus(pages.length ? pages : [])],
+    ["Payment Signal", paymentStatus()],
+    ["Traffic Signal", trafficStatus()],
+    ["Validation Signal", validationStatus()],
+  ];
+}
+
+function decisionGaps() {
+  const gaps = [];
+  if (serpStatus() !== "Ready") gaps.push("SERP Top 10 未导入");
+  if (realPages(competitors).length < 3) gaps.push("真实竞品页面不足");
+  if (paymentStatus() !== "Ready") gaps.push("支付信号缺失");
+  if (trafficStatus() !== "Ready") gaps.push("流量信号缺失");
+  return gaps;
+}
+
+function slotClass(status) {
+  return `slot-status ${String(status || "").toLowerCase().replace(/\s+/g, "-")}`;
+}
+
+function sampleTag() {
+  return el("span", "sample-tag", "SAMPLE / 测试样本");
+}
+
+const EVIDENCE_HOLES = [
+  ["Demand Radar", "Search Demand", "暂无真实需求数据，等待导入 Google Trends / GSC / Keyword CSV"],
+  ["SERP Evidence", "SERP Top 10", "暂无真实 SERP，等待导入 SERP CSV"],
+  ["Competitor Evidence", "Competitor Pages", "暂无真实竞品，等待 SERP 转竞品草稿"],
+  ["Payment Evidence", "Payment Signal", "暂无支付信号，等待导入 Dodo / Stripe / Nexi"],
+  ["Traffic Evidence", "Traffic Signal", "暂无流量信号，等待导入 SiteData / Similarweb / Ahrefs"],
+  ["Validation Evidence", "Validation Signal", "暂无验证数据，等待接入 GSC / GA4 / 注册 / 支付"],
+];
+
 function copyablePages() {
-  return [...competitors]
+  return realPages(competitors)
     .filter((page) => Number(page.copyability_score) >= 75 && COPYABLE_TYPES.includes(page.page_type))
     .sort((left, right) => Number(right.copyability_score) - Number(left.copyability_score));
 }
@@ -776,23 +937,42 @@ function verdictTag(verdict) {
 function renderDashboard() {
   const root = document.getElementById("cockpit");
   if (!root) return;
-  const ranked = rankedOpportunities();
+  const ranked = [...opportunities].sort((left, right) => {
+    const rank = (displayVerdict(left) === "Research / Evidence Missing" ? 1 : (VERDICT_RANK[left.verdict] ?? 9))
+      - (displayVerdict(right) === "Research / Evidence Missing" ? 1 : (VERDICT_RANK[right.verdict] ?? 9));
+    if (rank !== 0) return rank;
+    return Number(right.score) - Number(left.score);
+  });
   const counts = { Build: 0, Research: 0, Observe: 0, Reject: 0 };
   ranked.forEach((card) => {
+    if (sampleBackedBuild(card)) return;
     if (counts[card.verdict] != null) counts[card.verdict] += 1;
   });
   const thin = ranked.filter(lacksSample);
   const evidenced = ranked.filter((card) => Number(card.competitor_count) > 0);
   const week = ranked.filter((card) => card.verdict !== "Reject" && String(card.seven_day_action || "").trim());
-  const priority = ranked.find((card) => card.verdict === "Build") || ranked[0];
-  if (!dashboardOpportunityId && priority) dashboardOpportunityId = priority.id;
-  const selected = ranked.find((card) => card.id === dashboardOpportunityId) || priority || null;
+  const priority = ranked.find((card) => displayVerdict(card) === "Build") || null;
+  if (!dashboardOpportunityId && ranked[0]) dashboardOpportunityId = ranked[0].id;
+  const selected = ranked.find((card) => card.id === dashboardOpportunityId) || ranked[0] || null;
   if (selected) dashboardOpportunityId = selected.id;
+  const gaps = decisionGaps();
 
   root.replaceChildren();
   const summary = el("section", "deck");
   summary.id = "decision-summary";
   summary.append(el("h2", null, "DECISION SUMMARY"));
+  if (gaps.length) {
+    summary.append(el("p", "today", "当前不能下 Build 决策"));
+    summary.append(el("div", "hint", "缺口："));
+    gaps.forEach((gap) => summary.append(el("div", "gap-line", gap)));
+    summary.append(el("div", "hint", "下一步："));
+    [
+      "1. 手动搜索目标关键词",
+      "2. 复制前 10 个搜索结果",
+      "3. Admin → Sources → Data Imports 导入 SERP CSV",
+      "4. 将 SERP 批次转为竞品页面草稿",
+    ].forEach((step) => summary.append(el("div", "clamp", step)));
+  }
   const metrics = el("div", "metrics");
   metrics.append(metricNode("Build", counts.Build, true));
   metrics.append(metricNode("Research", counts.Research, false));
@@ -802,48 +982,31 @@ function renderDashboard() {
   metrics.append(metricNode("有竞品证据", evidenced.length, false));
   metrics.append(metricNode("待 7 天动作", week.length, false));
   summary.append(metrics);
-  let today = "今天没有项目卡。先从关键词里生成一张。";
-  if (priority && priority.verdict === "Build") {
-    today = `今天优先做这一页：${priority.first_page_plan || priority.title}`;
-  } else if (priority) {
-    today = `今天没有 Build。先处理 ${priority.verdict}：${priority.title}`;
-  }
-  summary.append(el("p", "today", today));
+  let today = "今天没有可执行的真实 Build。";
+  if (priority) today = `今天优先做这一页：${priority.first_page_plan || priority.title}`;
+  if (!gaps.length) summary.append(el("p", "today", today));
   if (thin.length) {
     summary.append(el("p", "gap-line", `证据不足：${thin.map((card) => card.title || card.target_keyword || "未命名").join("、")}`));
   }
   const pages = copyablePages();
-  summary.append(el("p", "copy-line", pages.length
-    ? `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`
-    : "可复制：还没有达到可复制线的竞品页面。"));
-  const drafts = competitors.filter((page) => !COPYABLE_TYPES.includes(page.page_type) || Number(page.copyability_score) < 75);
-  if (drafts.length) {
-    summary.append(el("p", "copy-line", `竞品草稿：${drafts.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type || "unknown"} ${page.copyability_score}`).join(" · ")}`));
+  if (pages.length) {
+    summary.append(el("p", "copy-line", `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`));
   }
   root.append(summary);
 
-  const radar = el("section", "cockpit-card");
-  radar.id = "demand-radar";
-  radar.append(el("h2", null, "DEMAND RADAR"));
-  const demand = [...keywords].sort((left, right) => Number(right.score) - Number(left.score)).slice(0, 7);
-  if (demand.length === 0) {
-    radar.append(el("div", "empty", "NO KEYWORD"));
-  }
-  demand.forEach((cluster) => {
-    const row = el("div", "radar-row");
-    const top = el("div", "row-top");
-    top.append(el("b", null, cluster.name || "--"));
-    top.append(el("span", "verdict-tag", keywordGrade(cluster.score)));
-    top.append(el("span", "score-num", String(cluster.score)));
-    row.append(top);
-    row.append(el("div", "clamp", `${cluster.page_type || "--"} · ${cluster.search_intent || "--"}`));
-    row.addEventListener("click", () => {
-      selectedKeywordId = cluster.id;
-      setView("keywords");
-    });
-    radar.append(row);
+  const holes = el("div", "slot-grid");
+  holes.id = "evidence-holes";
+  const slotMap = Object.fromEntries(evidenceSlots(selected));
+  EVIDENCE_HOLES.forEach(([title, slotName, waiting]) => {
+    const status = slotMap[slotName] || "Missing";
+    const card = el("section", "cockpit-card");
+    card.append(el("h2", null, title));
+    card.append(el("b", slotClass(status), status));
+    if (status !== "Ready") card.append(el("p", "clamp", waiting));
+    else card.append(el("p", "clamp", "已有真实来源，可以进入判断。"));
+    holes.append(card);
   });
-  root.append(radar);
+  root.append(holes);
 
   const queue = el("section", "cockpit-card");
   queue.id = "opportunity-queue";
@@ -855,14 +1018,16 @@ function renderDashboard() {
   queueRows.forEach((card) => {
     const row = el("div", card.id === dashboardOpportunityId ? "queue-item active" : "queue-item");
     row.dataset.opportunityId = String(card.id);
+    const shown = displayVerdict(card);
     const top = el("div", "queue-top");
-    top.append(verdictTag(card.verdict));
+    top.append(el("span", shown === "Build" ? "verdict-tag build" : "verdict-tag", shown));
     top.append(el("span", "title", card.title || "--"));
     top.append(el("span", "score-num", String(card.score)));
     row.append(top);
     row.append(el("div", "clamp", `${card.target_keyword || "--"} · ${card.page_type || "--"}`));
-    if (card.first_page_plan) row.append(el("div", "clamp", card.first_page_plan));
-    if (card.seven_day_action) row.append(el("div", "clamp", card.seven_day_action));
+    if (sampleBackedBuild(card)) row.append(el("div", "gap-line", "当前只有样例数据，不能作为 Build 判断依据。"));
+    if (!sampleBackedBuild(card) && card.first_page_plan) row.append(el("div", "clamp", card.first_page_plan));
+    if (!sampleBackedBuild(card) && card.seven_day_action) row.append(el("div", "clamp", card.seven_day_action));
     row.addEventListener("click", () => {
       dashboardOpportunityId = card.id;
       renderDashboard();
@@ -882,17 +1047,14 @@ function renderDashboard() {
     plan.append(el("div", "empty", "选择一张项目卡，看 7 / 14 / 30 / 60 天动作。"));
   } else {
     evidence.append(el("div", "headline", selected.title || "--"));
-    evidence.append(el("p", "judgment", `关键词分 ${selected.keyword_score} · 竞品 ${selected.competitor_count} · 最好 ${selected.best_competitor_domain || "无"} ${selected.best_competitor_score}`));
-    const related = competitors
-      .filter((page) => page.cluster_id === selected.cluster_id)
-      .sort((left, right) => Number(right.copyability_score) - Number(left.copyability_score));
-    if (related.length) {
-      evidence.append(el("div", "hint", "可复制页面"));
-      related.forEach((page) => {
-        const note = String(page.notes || "").split("\n")[0];
-        evidence.append(el("div", "clamp", `${page.domain || page.title || "--"} · ${page.title || "--"} · ${page.page_type || "unknown"} · ${page.copyability_score}${note ? ` · ${note}` : ""}`));
-      });
-    }
+    if (sampleBackedBuild(selected)) evidence.append(el("div", "gap-line", "当前只有样例数据，不能作为 Build 判断依据。"));
+    evidence.append(el("div", "hint", "Evidence Slots"));
+    evidenceSlots(selected).forEach(([name, status]) => {
+      const line = el("div", "slot-row");
+      line.append(el("span", null, name));
+      line.append(el("b", slotClass(status), status));
+      evidence.append(line);
+    });
     const sourceBox = el("div");
     sourceBox.id = "dash-source-evidence";
     evidence.append(sourceBox);
@@ -937,16 +1099,33 @@ async function loadDashboardEvidence(cardId) {
   }
 }
 
+async function loadJsonList(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes] = await Promise.all([
+  const [oppRes, kwRes, compRes, imports, serp, payment, traffic, keywordSignals] = await Promise.all([
     fetch("/api/opportunities"),
     fetch("/api/keywords"),
     fetch("/api/competitors"),
+    loadJsonList("/api/imports"),
+    loadJsonList("/api/raw-records?record_type=serp_result"),
+    loadJsonList("/api/raw-records?record_type=payment_signal"),
+    loadJsonList("/api/raw-records?record_type=traffic_signal"),
+    loadJsonList("/api/raw-records?record_type=keyword_signal"),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
   keywords = await kwRes.json();
   competitors = await compRes.json();
+  dashboardFeeds = { imports, serp, payment, traffic, keywords: keywordSignals };
   if (viewMode === "dashboard") renderDashboard();
 }
 
@@ -958,6 +1137,11 @@ function setView(mode) {
       const root = document.getElementById("cockpit");
       if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
     });
+    return;
+  }
+  if (mode === "health") {
+    listEl.replaceChildren(el("div", "empty", "状态在右侧"));
+    loadProviderHealth();
     return;
   }
   if (mode === "trace") {
@@ -1053,6 +1237,7 @@ function renderCompetitorList() {
     const row = el("div", selectedPageId === page.id ? "item active" : "item");
     row.append(el("div", "title", page.title || page.domain || "--"));
     const meta = el("div", "meta");
+    if (isSamplePage(page)) meta.append(sampleTag());
     meta.append(el("span", null, page.domain || "--"));
     meta.append(el("span", null, page.page_type || "--"));
     meta.append(el("span", null, page.target_keyword || "--"));
@@ -1071,6 +1256,7 @@ function renderCompetitorDetail(page, saved) {
   detailEl.replaceChildren();
   detailEl.append(el("div", "hint", "竞品页面详情"));
   detailEl.append(el("div", "headline", page.title || "--"));
+  if (isSamplePage(page)) detailEl.append(sampleTag());
   const meta = el("div", "meta");
   meta.append(el("span", null, page.domain || "--"));
   meta.append(el("span", null, page.page_type || "--"));
@@ -1653,8 +1839,24 @@ function renderSourceList() {
   });
 }
 
+function importTemplates() {
+  const box = el("div", "import-templates");
+  box.append(el("div", "hint", "CSV 模板"));
+  [
+    ["SERP CSV", "title,url,domain,snippet,rank"],
+    ["Payment Ranking CSV", "domain,url,provider,rank,traffic,month"],
+    ["Traffic Signal CSV", "domain,url,traffic,traffic_growth,source,month"],
+    ["Keyword Signal CSV", "keyword,score,source,region,time_range"],
+  ].forEach(([name, header]) => {
+    box.append(el("div", "template-name", name));
+    box.append(el("pre", "template-csv", header));
+  });
+  return box;
+}
+
 function renderImportList() {
   listEl.replaceChildren();
+  listEl.append(importTemplates());
   if (sourceImports.length === 0) {
     listEl.append(el("div", "empty", "NO IMPORT"));
     return;
@@ -1663,6 +1865,7 @@ function renderImportList() {
     const row = el("div", selectedImportId === batch.id ? "item active" : "item");
     row.append(el("div", "title", batch.import_name || "--"));
     const meta = el("div", "meta");
+    if (isSampleText(batch.import_name)) meta.append(sampleTag());
     meta.append(el("span", null, batch.source_name || "--"));
     meta.append(el("span", null, batch.provider || "--"));
     meta.append(el("span", null, batch.source_type || "--"));
@@ -2019,12 +2222,78 @@ function appendSourceBind(host, options) {
   });
 }
 
+const GCLOUD_CHECKS = [
+  "gcloud config get-value project",
+  "gcloud services list --enabled | grep customsearch",
+  "gcloud services list --enabled | grep searchconsole",
+  "gcloud services list --enabled | grep analyticsdata",
+];
+
+function renderProviderHealth(payload) {
+  detailEl.replaceChildren();
+  detailEl.append(el("div", "hint", "Provider Health"));
+  detailEl.append(el("div", "headline", `SERP_PROVIDER = ${payload.serp_provider || "--"}`));
+  (payload.providers || []).forEach((item) => {
+    const row = el("div", "slot-row");
+    row.append(el("span", null, item.name || "--"));
+    row.append(el("b", slotClass(item.status), item.status || "--"));
+    detailEl.append(row);
+    if (item.message) detailEl.append(el("div", "clamp", item.message));
+    if (item.action) detailEl.append(el("div", "clamp", item.action));
+    if (item.last_status_code != null) detailEl.append(el("div", "clamp", `last_status_code ${item.last_status_code}`));
+  });
+  const check = document.createElement("button");
+  check.id = "provider-google-check";
+  check.type = "button";
+  check.textContent = "检测";
+  check.addEventListener("click", () => runGoogleHealthCheck(check));
+  detailEl.append(check);
+  detailEl.append(el("div", "hint", "这些命令只能检查配置，不能解决项目无 Custom Search JSON API 权限。"));
+  GCLOUD_CHECKS.forEach((command) => detailEl.append(el("pre", "template-csv", command)));
+}
+
+async function loadProviderHealth() {
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch("/api/providers/health");
+    const data = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", "加载失败"));
+      return;
+    }
+    renderProviderHealth(data);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function runGoogleHealthCheck(button) {
+  button.disabled = true;
+  jobEl.textContent = "检测 Google CSE";
+  try {
+    const response = await fetch("/api/providers/google-cse/check", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      jobEl.textContent = "检测失败";
+      button.disabled = false;
+      return;
+    }
+    const google = (data.providers || []).find((item) => item.name === "Google CSE");
+    jobEl.textContent = google ? `Google CSE ${google.status}` : "检测完成";
+    renderProviderHealth(data);
+  } catch (_error) {
+    jobEl.textContent = "检测失败";
+    button.disabled = false;
+  }
+}
+
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("view-dashboard").addEventListener("click", () => setView("dashboard"));
 document.getElementById("view-opportunities").addEventListener("click", () => setView("opportunities"));
 document.getElementById("view-keywords").addEventListener("click", () => setView("keywords"));
 document.getElementById("view-competitors").addEventListener("click", () => setView("competitors"));
 document.getElementById("view-admin").addEventListener("click", () => setView(ADMIN_MODES.includes(viewMode) ? viewMode : "sources"));
+document.getElementById("view-health").addEventListener("click", () => setView("health"));
 document.getElementById("view-sources").addEventListener("click", () => setView("sources"));
 document.getElementById("view-imports").addEventListener("click", () => setView("imports"));
 document.getElementById("view-trace").addEventListener("click", () => setView("trace"));

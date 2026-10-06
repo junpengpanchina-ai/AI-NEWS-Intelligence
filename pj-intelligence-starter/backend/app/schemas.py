@@ -326,6 +326,22 @@ class ImportSourceResult(BaseModel):
     updated_records: int
 
 
+class ProviderHealthItem(BaseModel):
+    name: str
+    type: str
+    enabled: bool
+    configured: bool
+    status: str
+    message: str
+    last_status_code: int | None = None
+    action: str | None = None
+
+
+class ProviderHealthOut(BaseModel):
+    serp_provider: str
+    providers: list[ProviderHealthItem]
+
+
 class PromoteSerpIn(BaseModel):
     cluster_id: int
 
