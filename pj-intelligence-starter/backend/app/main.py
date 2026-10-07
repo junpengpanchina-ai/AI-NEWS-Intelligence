@@ -117,7 +117,7 @@ from app.opportunities import (
     save_opportunity_analysis,
 )
 from app.sitedata import get_settings, recent_signals, run_all, run_rankings, set_auto_create, top_opportunities
-from app.storage import backup_database, log_storage_startup, storage_health
+from app.storage import backup_database, export_csv, list_backups, log_storage_startup, storage_health
 from app.trace import clear_traces, list_traces, record_trace
 from app.schemas import (
     AnalysisOut,
@@ -186,7 +186,9 @@ from app.schemas import (
     DossierDetailOut,
     DossierListOut,
     ManualIntakeIn,
+    StorageBackupListOut,
     StorageBackupOut,
+    StorageExportOut,
     StorageHealthOut,
 )
 from app.dossiers import (
@@ -772,6 +774,16 @@ def storage_backup():
         return backup_database()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/storage/backups", response_model=StorageBackupListOut)
+def storage_backups():
+    return {"items": list_backups()}
+
+
+@app.post("/api/storage/export", response_model=StorageExportOut)
+def storage_export():
+    return export_csv()
 
 
 @app.post("/api/sitedata/rankings/run", response_model=SiteDataRunOut)

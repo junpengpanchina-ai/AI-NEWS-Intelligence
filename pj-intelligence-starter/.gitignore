@@ -3,8 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-data/*.db
-data/*.db-*
-data/backups/
-data/sitedata-bridge.token
+data/
+*.db
+*.sqlite
+*.sqlite3
+backups/
+exports/
 .DS_Store

@@ -2670,7 +2670,7 @@ function renderProviderHealth(payload) {
   GCLOUD_CHECKS.forEach((command) => detailEl.append(el("pre", "template-csv", command)));
 }
 
-function renderStorageHealth(data) {
+function renderStorageHealth(data, backups) {
   detailEl.replaceChildren();
   const card = el("section", "cockpit-card");
   card.id = "storage-health";
@@ -2679,38 +2679,63 @@ function renderStorageHealth(data) {
     card.append(el("div", "error", "当前数据库可能在容器内部，重建容器可能导致数据丢失。建议挂载 ./data:/app/data。"));
   }
   [
-    `DB 类型：${data.database_type || "--"}`,
     `DB 路径：${data.database_path || "--"}`,
     `DB 大小：${data.database_size_mb ?? "--"} MB`,
-    `是否可写：${data.writable ? "是" : "否"}`,
-    `是否持久化挂载：${data.persistent_volume ? "是" : "否"}`,
-    `最近写入时间：${data.last_write_at || "--"}`,
+    `是否持久化：${data.persistent_volume ? "是" : "否"}`,
+    `最近备份时间：${data.last_backup_at || "--"}`,
+    `备份数量：${data.backup_count ?? 0}`,
+    `导出数量：${data.export_count ?? 0}`,
   ].forEach((line) => card.append(el("div", "clamp", line)));
   const tables = data.tables || {};
-  ["raw_source_records", "intelligence_feed", "external_opportunities", "intelligence_dossiers"].forEach((name) => {
+  ["raw_source_records", "intelligence_feed", "external_opportunities", "intelligence_dossiers", "dossier_evidence_items"].forEach((name) => {
     card.append(el("div", "clamp", `${name}：${tables[name] ?? "--"}`));
   });
-  const button = el("button", null, "本地备份");
-  button.type = "button";
-  button.addEventListener("click", () => runStorageBackup(button));
-  card.append(button);
-  card.append(el("div", "clamp", ""));
+  const actions = el("div", "filter-bar");
+  const backup = el("button", null, "Backup Now");
+  backup.type = "button";
+  backup.id = "storage-backup-now";
+  backup.addEventListener("click", () => runStorageBackup(backup));
+  const exportButton = el("button", null, "Export CSV");
+  exportButton.type = "button";
+  exportButton.id = "storage-export-csv";
+  exportButton.addEventListener("click", () => runStorageExport(exportButton));
+  actions.append(backup, exportButton);
+  card.append(actions);
   const result = el("div", "clamp", "");
   result.id = "storage-backup-result";
   card.append(result);
+  card.append(el("h3", null, "BACKUPS"));
+  const rows = backups || [];
+  if (!rows.length) card.append(el("div", "empty", "还没有备份"));
+  rows.forEach((row) => {
+    card.append(el("div", "clamp", `${row.file_name} · ${row.size_mb} MB · ${row.created_at}`));
+  });
+  const restore = el("section");
+  restore.id = "storage-restore";
+  restore.append(el("h3", null, "RESTORE"));
+  restore.append(el("div", "error", "恢复会覆盖当前数据库。当前版本只允许手动恢复，避免误操作。"));
+  restore.append(el("div", "clamp", "1. 停止容器"));
+  restore.append(el("div", "clamp", "2. 复制备份 db 覆盖 ./data/pj_intelligence.db"));
+  restore.append(el("div", "clamp", "3. 重启容器"));
+  restore.append(el("pre", "template-csv", "docker compose stop\ncp data/backups/<backup_file> data/pj_intelligence.db\ndocker compose start"));
+  card.append(restore);
   detailEl.append(card);
 }
 
 async function loadStorageHealth() {
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch("/api/storage/health");
-    const data = await response.json();
-    if (!response.ok) {
+    const [healthRes, backupRes] = await Promise.all([
+      fetch("/api/storage/health"),
+      fetch("/api/storage/backups"),
+    ]);
+    const data = await healthRes.json();
+    const backups = await backupRes.json();
+    if (!healthRes.ok || !backupRes.ok) {
       detailEl.replaceChildren(el("div", "error", "加载失败"));
       return;
     }
-    renderStorageHealth(data);
+    renderStorageHealth(data, backups.items || []);
   } catch (_error) {
     detailEl.replaceChildren(el("div", "error", "加载失败"));
   }
@@ -2725,12 +2750,36 @@ async function runStorageBackup(button) {
     const data = await response.json();
     if (!response.ok) {
       if (result) result.textContent = data.detail || "备份失败";
+      button.disabled = false;
       return;
     }
-    if (result) result.textContent = `${data.filename} · ${data.size_mb} MB · ${data.created_at}`;
+    await loadStorageHealth();
+    const next = document.getElementById("storage-backup-result");
+    if (next) next.textContent = `${data.backup_file} · ${data.size_mb} MB · ${data.created_at}`;
   } catch (_error) {
     if (result) result.textContent = "备份失败";
-  } finally {
+    button.disabled = false;
+  }
+}
+
+async function runStorageExport(button) {
+  button.disabled = true;
+  const result = document.getElementById("storage-backup-result");
+  if (result) result.textContent = "正在导出";
+  try {
+    const response = await fetch("/api/storage/export", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      if (result) result.textContent = data.detail || "导出失败";
+      button.disabled = false;
+      return;
+    }
+    const summary = (data.files || []).map((file) => `${file.file_name} (${file.rows})`).join(" · ");
+    await loadStorageHealth();
+    const next = document.getElementById("storage-backup-result");
+    if (next) next.textContent = summary || "导出完成";
+  } catch (_error) {
+    if (result) result.textContent = "导出失败";
     button.disabled = false;
   }
 }

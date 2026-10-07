@@ -877,10 +877,37 @@ class StorageHealthOut(BaseModel):
     writable: bool = False
     persistent_volume: bool = False
     last_write_at: str = ""
+    last_backup_at: str = ""
+    backup_count: int = 0
+    export_count: int = 0
     tables: dict[str, int] = {}
 
 
 class StorageBackupOut(BaseModel):
-    filename: str = ""
+    backup_file: str = ""
     size_mb: float = 0
+    created_at: str = ""
+    tables_count: dict[str, int] = {}
+
+
+class StorageBackupItem(BaseModel):
+    file_name: str = ""
+    size_mb: float = 0
+    created_at: str = ""
+    path: str = ""
+
+
+class StorageBackupListOut(BaseModel):
+    items: list[StorageBackupItem] = []
+
+
+class StorageExportFile(BaseModel):
+    table: str = ""
+    file_name: str = ""
+    rows: int = 0
+    size_mb: float = 0
+
+
+class StorageExportOut(BaseModel):
+    files: list[StorageExportFile] = []
     created_at: str = ""

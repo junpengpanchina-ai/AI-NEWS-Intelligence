@@ -524,8 +524,12 @@ def external_opportunities(
     limit: int | None = None,
     offset: int | None = None,
     home: bool = False,
+    all_rows: bool = False,
 ) -> dict:
-    size, start = _page(limit, offset)
+    if all_rows:
+        size, start = 1_000_000, 0
+    else:
+        size, start = _page(limit, offset)
     conn = connect()
     try:
         rows = conn.execute(
