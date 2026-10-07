@@ -27,6 +27,12 @@ let evidenceStats = { groups: [], record_types: [] };
 let dashboardLatest = { items: [] };
 let dashboardExternal = { items: [] };
 let dashboardFeed = { items: [] };
+let dashboardToday = { items: [] };
+let dashboardDossiers = { items: [] };
+let dashboardSiteSignals = { items: [] };
+let dashboardSiteOpps = { items: [] };
+let sitedataSettings = { auto_create_dossier: false };
+let sitedataConnector = null;
 let dashboardRanks = { payment: [], traffic: [], authority: [] };
 let collectStatus = { finished_at: "", sources_checked: 0, new_items: 0, error_count: 0, top_signal: "" };
 let explorerQuery = { dataset_type: "", record_type: "", provider: "", batch_id: "", period_month: "", domain: "", keyword: "", source_name: "", offset: 0 };
@@ -743,12 +749,13 @@ const EVIDENCE_GAP = "证据不足：当前只能作为 Research / Observe，不
 function applyChrome(mode) {
   const admin = ADMIN_MODES.includes(mode);
   const focused = mode === "opportunities" || mode === "keywords" || mode === "competitors";
-  const board = mode === "explorer" || mode === "external" || mode === "feed";
+  const board = mode === "explorer" || mode === "external" || mode === "feed" || mode === "dossier" || mode === "dossiers";
   document.body.dataset.screen = mode === "dashboard" ? "dashboard" : board ? "board" : "workspace";
   document.body.dataset.focus = focused ? "work" : "admin";
   document.getElementById("admin-nav").hidden = !admin;
   document.getElementById("view-dashboard").classList.toggle("on", mode === "dashboard");
   document.getElementById("view-feed").classList.toggle("on", mode === "feed");
+  document.getElementById("view-dossiers").classList.toggle("on", mode === "dossiers" || mode === "dossier");
   document.getElementById("view-explorer").classList.toggle("on", mode === "explorer");
   document.getElementById("view-external").classList.toggle("on", mode === "external");
   document.getElementById("view-opportunities").classList.toggle("on", mode === "opportunities");
@@ -1165,7 +1172,7 @@ function renderDashboard() {
   if (pages.length) {
     summary.append(el("p", "copy-line", `可复制：${pages.slice(0, 5).map((page) => `${page.domain || page.title} ${page.page_type} ${page.copyability_score}`).join(" · ")}`));
   }
-  root.append(renderFeedCard(), renderExternalTopCard(), renderCoverageCard(), renderRankCard(), renderLatestCard());
+  root.append(renderTodayCard(), renderExternalTopCard(), renderCoverageCard(), renderDossierCard(), renderFeedCard(), renderSiteSignalCard(), renderSiteOppCard(), renderRankCard(), renderLatestCard());
 
   const holes = el("div", "slot-grid");
   holes.id = "evidence-holes";
@@ -1315,16 +1322,20 @@ async function loadJsonObject(url) {
 }
 
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes, stats, latest, external, feed, ranks, status] = await Promise.all([
+  const [oppRes, kwRes, compRes, stats, latest, external, feed, today, ranks, status, dossiers, siteSignals, siteOpps] = await Promise.all([
     fetch("/api/opportunities"),
     fetch("/api/keywords"),
     fetch("/api/competitors"),
     loadEvidenceStats(),
     loadJsonObject("/api/explorer/records?limit=10"),
-    loadJsonObject("/api/external-opportunities?limit=10"),
+    loadJsonObject("/api/external-opportunities?limit=10&home=true"),
     loadJsonObject("/api/intelligence/feed?limit=20"),
+    loadJsonObject("/api/dashboard/today?limit=10"),
     loadJsonObject("/api/dashboard/ranks?limit=10"),
     loadJsonObject("/api/intake/collect-status"),
+    loadJsonObject("/api/dossiers?limit=10"),
+    loadJsonObject("/api/sitedata/signals?limit=20"),
+    loadJsonObject("/api/sitedata/opportunities?limit=10"),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
@@ -1334,6 +1345,10 @@ async function loadDashboard() {
   dashboardLatest = latest && Array.isArray(latest.items) ? latest : { items: [] };
   dashboardExternal = external && Array.isArray(external.items) ? external : { items: [] };
   dashboardFeed = feed && Array.isArray(feed.items) ? feed : { items: [] };
+  dashboardToday = today && Array.isArray(today.items) ? today : { items: [] };
+  dashboardDossiers = dossiers && Array.isArray(dossiers.items) ? dossiers : { items: [] };
+  dashboardSiteSignals = siteSignals && Array.isArray(siteSignals.items) ? siteSignals : { items: [] };
+  dashboardSiteOpps = siteOpps && Array.isArray(siteOpps.items) ? siteOpps : { items: [] };
   dashboardRanks = ranks && Array.isArray(ranks.payment) ? ranks : { payment: [], traffic: [], authority: [] };
   collectStatus = status || collectStatus;
   renderCollectStatus();
@@ -1343,6 +1358,9 @@ async function loadDashboard() {
 
 function setView(mode) {
   viewMode = mode;
+  if (mode !== "dossier" && location.pathname.startsWith("/dossiers/")) {
+    history.pushState({}, "", "/");
+  }
   applyChrome(mode);
   if (mode === "dashboard") {
     loadDashboard().catch(() => {
@@ -1369,6 +1387,13 @@ function setView(mode) {
     loadFeedPage().catch(() => {
       const root = document.getElementById("cockpit");
       if (root) root.replaceChildren(el("div", "error", "Feed 加载失败"));
+    });
+    return;
+  }
+  if (mode === "dossiers") {
+    loadDossierList().catch(() => {
+      const root = document.getElementById("cockpit");
+      if (root) root.replaceChildren(el("div", "error", "案卷加载失败"));
     });
     return;
   }
@@ -2080,6 +2105,7 @@ const IMPORT_RECORD_TYPES = [
 
 function renderSourceList() {
   listEl.replaceChildren();
+  listEl.append(renderSiteDataRunner());
   if (dataSources.length === 0) {
     listEl.append(el("div", "empty", "NO SOURCE"));
     return;
@@ -2260,6 +2286,10 @@ async function loadSources() {
   const response = await fetch("/api/sources");
   if (!response.ok) throw new Error("sources");
   dataSources = await response.json();
+  const settings = await loadJsonObject("/api/sitedata/settings");
+  if (settings) sitedataSettings = settings;
+  const overview = await loadJsonObject("/api/intake/overview");
+  sitedataConnector = (overview?.connectors || []).find((item) => item.provider === "sitedata") || null;
   const importsResponse = await fetch("/api/imports");
   sourceImports = importsResponse.ok ? await importsResponse.json() : [];
   renderLedger();
@@ -2603,6 +2633,16 @@ function renderProviderHealth(payload) {
   detailEl.replaceChildren();
   detailEl.append(el("div", "hint", "Provider Health"));
   detailEl.append(el("div", "headline", `SERP_PROVIDER = ${payload.serp_provider || "--"}`));
+  if (payload.sitedata) {
+    const site = payload.sitedata;
+    detailEl.append(el("div", "clamp", `SiteData CLI: ${site.status}`));
+    detailEl.append(el("div", "clamp", `OAuth status: ${site.auth || "missing"}`));
+    detailEl.append(el("div", "clamp", `Available APIs: ${(site.available_apis || []).join(", ") || "--"}`));
+    detailEl.append(el("div", "clamp", `Last run time: ${site.last_run_at || "--"}`));
+    detailEl.append(el("div", "clamp", `Last status: ${site.last_status || "--"}`));
+    detailEl.append(el("div", "clamp", `Last error: ${site.last_error || "--"}`));
+    if (site.note) detailEl.append(el("div", "clamp", site.note));
+  }
   (payload.providers || []).forEach((item) => {
     const row = el("div", "slot-row");
     row.append(el("span", null, item.name || "--"));
@@ -3091,16 +3131,35 @@ function mainMetric(row) {
   return "--";
 }
 
+function coverageDetail(label, summary, status) {
+  const top = (summary.domains || []).slice(0, 3).join(", ") || "--";
+  return `${label}：${status}，记录数 ${summary.record_count}，最新月份 ${summary.latest_month || "--"}，Top 3 ${top}`;
+}
+
+function coverageGap(label, status, gap) {
+  const shown = status === "Ready" ? "partial" : String(status || "missing").toLowerCase();
+  return `${label}：${shown}，缺口：${gap}`;
+}
+
 function renderCoverageCard() {
   const card = el("section", "cockpit-card dash-wide");
   card.id = "data-coverage";
-  card.append(el("h2", null, "DATA COVERAGE"));
-  [
-    coverageText("Payment", "payment_signal", paymentStatus()),
-    coverageText("Authority", "authority_signal", authorityStatus()),
-    coverageText("Traffic", "traffic_signal", trafficStatus()),
-    coverageText("Validation", "validation_signal", validationStatus()),
-  ].forEach((line) => card.append(el("div", "clamp", line)));
+  card.append(el("h2", null, "EVIDENCE COVERAGE"));
+  card.append(el("div", "clamp", coverageDetail("Payment", evidenceSummary("Payment Signal"), paymentStatus())));
+  card.append(el("div", "clamp", coverageDetail("Traffic", evidenceSummary("Traffic Signal"), trafficStatus())));
+  card.append(el("div", "clamp", coverageDetail("Authority", evidenceSummary("Authority Signal"), authorityStatus())));
+  const serp = serpStatus();
+  const competitor = competitorSlotStatus(competitors);
+  const validation = validationStatus();
+  card.append(el("div", "clamp", serp === "Ready"
+    ? coverageDetail("SERP", evidenceSummary("SERP Signal"), serp)
+    : coverageGap("SERP", serp, serp === "Partial" ? "SERP Top 10 未齐" : "没有 SERP 结果")));
+  card.append(el("div", "clamp", competitor === "Ready"
+    ? coverageDetail("Competitor", evidenceSummary("Competitor Signal"), competitor)
+    : coverageGap("Competitor", competitor, competitor === "Partial" ? "竞品页不足 5 个" : "没有竞品页")));
+  card.append(el("div", "clamp", validation === "Ready"
+    ? coverageDetail("Validation", evidenceSummary("Validation Signal"), validation)
+    : coverageGap("Validation", validation, "没有验证记录")));
   return card;
 }
 
@@ -3135,12 +3194,19 @@ function renderLatestCard() {
   return card;
 }
 
+function isDeskNoise(domain) {
+  const host = String(domain || "").toLowerCase().split(":")[0];
+  const parts = host.split(".").filter(Boolean);
+  if (["example.com", "test.com", "localhost", "demo.com", "sample.com"].includes(host)) return true;
+  return parts.some((part) => ["demo", "sample", "test", "example", "localhost"].includes(part));
+}
+
 function renderExternalTopCard() {
   const card = el("section", "cockpit-card dash-wide");
   card.id = "external-top";
   card.append(el("h2", null, "TOP EXTERNAL OPPORTUNITIES"));
-  card.append(el("p", "clamp", "外部机会侦查榜，不是正式 Build。正式 Build 仍由 Opportunity Queue 判断。"));
-  const rows = dashboardExternal.items || [];
+  card.append(el("p", "clamp", "按 P0、P1、P2 排序。样例域名留在 Data Explorer。"));
+  const rows = (dashboardExternal.items || []).filter((row) => !isDeskNoise(row.domain) && row.opportunity_tier !== "P3_noise").slice(0, 10);
   if (!rows.length) {
     card.append(el("div", "empty", "暂无外部机会"));
     return card;
@@ -3149,12 +3215,13 @@ function renderExternalTopCard() {
     const line = el("div", "feed-line");
     const top = el("div", "slot-row");
     top.append(el("b", null, row.domain || "--"));
-    top.append(el("span", null, `score ${row.opportunity_score} · evidence ${row.evidence_count}`));
+    top.append(el("span", null, `score ${row.opportunity_score} · ${row.opportunity_tier || "--"}`));
     line.append(top);
-    const tags = el("div", "tag-row");
-    (row.tags || []).forEach((tag) => tags.append(el("span", "mini-tag", tag)));
-    line.append(tags);
-    line.append(el("div", "clamp", row.recommended_action || "--"));
+    line.append(el("div", "clamp", `evidence ${(row.evidence_tags || row.tags || []).join(", ") || "--"}`));
+    line.append(el("div", "clamp", `latest ${row.latest_signal || "--"}`));
+    line.append(el("div", "clamp", `missing ${(row.missing_evidence || []).join(", ") || "--"}`));
+    line.append(el("div", "clamp", `next ${row.next_action || "--"}`));
+    line.append(deskDossierActions(row.domain));
     line.addEventListener("click", () => {
       externalQuery = { ...externalQuery, domain: row.domain || "", offset: 0 };
       setView("external");
@@ -3205,6 +3272,11 @@ function feedActions(row) {
     button.addEventListener("click", () => runFeedAction(row.id, action, button));
     actions.append(button);
   });
+  actions.append(deskDossierActions(row.domain, row.dossier_id, row));
+  const ignore = el("button", null, "Ignore");
+  ignore.type = "button";
+  ignore.addEventListener("click", () => runDossierFeedAction(row, "ignore", ignore));
+  actions.append(ignore);
   return actions;
 }
 
@@ -3232,12 +3304,37 @@ function appendFeedRows(card, rows) {
   }
   rows.forEach((row) => {
     const line = el("div", "feed-line");
-    line.append(el("div", "clamp", `${row.time || row.created_at || "--"} · ${row.source || row.source_name || "--"} · ${row.domain || "--"} · ${row.signal || "--"}`));
+    line.append(el("div", "clamp", `${formatCollectTime(row.time || row.created_at)} · ${row.source || row.source_name || "--"} · ${row.domain || "--"} · ${row.signal || "--"}`));
     line.append(el("div", null, `[${row.source || row.source_name || "--"}] ${row.title || "--"}`));
     line.append(el("div", "clamp", row.why || row.why_it_matters || "--"));
+    line.append(el("div", "clamp", `tags ${(row.evidence_tags || []).join(", ") || "--"} · score ${row.score ?? "--"}`));
+    line.append(el("div", "clamp", `evidence ${row.evidence_count ?? 0} · missing ${row.missing_evidence || "--"} · next ${row.next_action || "--"}`));
     line.append(feedActions(row));
     card.append(line);
   });
+}
+
+function renderTodayCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "top-intelligence-today";
+  card.append(el("h2", null, "TOP INTELLIGENCE TODAY"));
+  const rows = (dashboardToday.items || []).filter((row) => !isDeskNoise(row.domain)).slice(0, 10);
+  if (!rows.length) {
+    card.append(el("div", "empty", "今天还没有可看的情报。"));
+    return card;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    line.append(el("div", "clamp", `${row.domain || "--"} · ${row.signal || "--"} · score ${row.score ?? "--"}`));
+    line.append(el("div", null, row.title || "--"));
+    line.append(el("div", "clamp", `${row.source || row.source_name || "--"} · ${(row.evidence_tags || []).join(", ") || "--"}`));
+    line.append(el("div", "clamp", row.why_it_matters || row.why || "--"));
+    line.append(el("div", "clamp", `missing ${row.missing_evidence || "--"}`));
+    line.append(el("div", "clamp", `next ${row.next_action || "--"}`));
+    line.append(deskDossierActions(row.domain, row.dossier_id, row));
+    card.append(line);
+  });
+  return card;
 }
 
 function renderFeedCard() {
@@ -3361,6 +3458,9 @@ function renderExplorer() {
     ["dr_growth_ranking", "dr_growth_ranking"],
     ["traffic_growth_ranking", "traffic_growth_ranking"],
     ["serp_result", "serp_result"],
+    ["sitedata_traffic_growth", "sitedata_traffic_growth"],
+    ["sitedata_dr_growth", "sitedata_dr_growth"],
+    ["sitedata_payment_traffic", "sitedata_payment_traffic"],
   ], explorerQuery.dataset_type));
   filters.append(filterSelect("explorer-record", [
     ["record_type", ""],
@@ -3393,9 +3493,13 @@ function renderExplorer() {
   }));
   const table = document.createElement("table");
   table.className = "data-table";
+  const siteList = (explorerQuery.provider || "").trim().toLowerCase() === "sitedata";
   const head = document.createElement("tr");
-  ["domain", "title", "dataset_type", "record_type", "provider", "period_month", "rank", "payment_traffic", "monthly_traffic", "current_traffic", "traffic_growth", "growth_rate", "current_dr", "previous_dr", "dr_growth", "domain_rating", "source_name", "original_file_name", "batch_id", "imported_at"].forEach((name) => {
-    head.append(el("th", null, name));
+  const columns = siteList
+    ? ["ranking_type", "period_month", "rank", "main_metric", "category", "source_name", "imported_at"]
+    : ["title", "dataset_type", "record_type", "provider", "period_month", "rank", "payment_traffic", "monthly_traffic", "current_traffic", "traffic_growth", "growth_rate", "current_dr", "previous_dr", "dr_growth", "domain_rating", "source_name", "original_file_name", "batch_id", "imported_at"];
+  ["domain", ...columns].forEach((name) => {
+    head.append(el("th", null, name === "ranking_type" ? "rankingType" : name));
   });
   table.append(head);
   (explorerPage.items || []).forEach((row) => {
@@ -3404,7 +3508,7 @@ function renderExplorer() {
     domainCell.append(el("span", null, row.domain || "--"));
     if (row.sample) domainCell.append(document.createTextNode(" "), sampleTag());
     line.append(domainCell);
-    ["title", "dataset_type", "record_type", "provider", "period_month", "rank", "payment_traffic", "monthly_traffic", "current_traffic", "traffic_growth", "growth_rate", "current_dr", "previous_dr", "dr_growth", "domain_rating", "source_name", "original_file_name", "batch_id", "imported_at"].forEach((key) => {
+    columns.forEach((key) => {
       line.append(el("td", null, row[key] || "--"));
     });
     line.addEventListener("click", () => {
@@ -3416,10 +3520,16 @@ function renderExplorer() {
       const detail = document.createElement("tr");
       const cell = document.createElement("td");
       cell.colSpan = 20;
-      cell.append(el("div", "hint", "normalized"));
-      cell.append(el("pre", "raw-block", JSON.stringify(row.normalized || {}, null, 2)));
+      if (!siteList) {
+        cell.append(el("div", "hint", "normalized"));
+        cell.append(el("pre", "raw-block", JSON.stringify(row.normalized || {}, null, 2)));
+      }
       cell.append(el("div", "hint", "raw_json"));
       cell.append(el("pre", "raw-block", row.raw_json || "{}"));
+      const attach = el("button", null, "Attach to Dossier");
+      attach.type = "button";
+      attach.addEventListener("click", () => attachExplorerRecord(row.id, attach));
+      cell.append(attach);
       detail.append(cell);
       table.append(detail);
     }
@@ -3487,15 +3597,19 @@ function renderExternal() {
   const table = document.createElement("table");
   table.className = "data-table";
   const head = document.createElement("tr");
-  ["domain", "opportunity_score", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_month", "top_keyword", "best_payment_traffic", "best_traffic_growth", "best_dr_growth", "recommended_action"].forEach((name) => {
+  ["domain", "opportunity_score", "opportunity_tier", "evidence_tags", "missing_evidence", "next_action", "reason", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_signal", "latest_month", "recommended_action", "dossier"].forEach((name) => {
     head.append(el("th", null, name));
   });
   table.append(head);
   (externalPage.items || []).forEach((row) => {
     const line = document.createElement("tr");
-    ["domain", "opportunity_score", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_month", "top_keyword", "best_payment_traffic", "best_traffic_growth", "best_dr_growth", "recommended_action"].forEach((key) => {
-      line.append(el("td", null, row[key] === 0 ? "0" : row[key] || "--"));
+    ["domain", "opportunity_score", "opportunity_tier", "evidence_tags", "missing_evidence", "next_action", "reason", "evidence_count", "payment_status", "traffic_status", "authority_status", "serp_status", "competitor_status", "latest_signal", "latest_month", "recommended_action"].forEach((key) => {
+      const value = row[key];
+      line.append(el("td", null, Array.isArray(value) ? value.join(", ") : value === 0 ? "0" : value || "--"));
     });
+    const actionCell = document.createElement("td");
+    actionCell.append(domainDossierActions(row.domain));
+    line.append(actionCell);
     table.append(line);
   });
   const wrap = el("div", "data-scroll");
@@ -3579,9 +3693,561 @@ async function loadBatchDetail(batchId) {
   });
 }
 
+function renderSiteSignalCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "sitedata-signals";
+  card.append(el("h2", null, "SITEDATA SIGNALS"));
+  const rows = dashboardSiteSignals.items || [];
+  if (!rows.length) {
+    card.append(el("div", "empty", "还没有 SiteData 信号。到 Admin → Sources 手动运行榜单。"));
+    return card;
+  }
+  rows.forEach((row) => {
+    const names = (row.top_domains || []).join(", ") || "--";
+    card.append(el("div", "clamp", `${row.label || row.ranking_type || "--"}: ${row.period_month || "--"} · ${row.count || 0} · ${names}`));
+  });
+  return card;
+}
+
+function renderSiteOppCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "sitedata-opportunities";
+  card.append(el("h2", null, "TOP SITEDATA OPPORTUNITIES"));
+  const rows = dashboardSiteOpps.items || [];
+  if (!rows.length) {
+    card.append(el("div", "empty", "暂无 SiteData 机会"));
+    return card;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    line.append(el("div", null, `${row.domain} · score ${row.score}`));
+    line.append(el("div", "clamp", `${(row.signals || []).join(" + ")} · ${row.latest_period || "--"}`));
+    line.append(el("div", "clamp", `Next: ${row.next_action || "--"}`));
+    line.addEventListener("click", () => {
+      externalQuery = { ...externalQuery, domain: row.domain || "", offset: 0 };
+      setView("external");
+    });
+    card.append(line);
+  });
+  return card;
+}
+
+function periodMonth(offset) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  let year = Number(parts.find((part) => part.type === "year").value);
+  let month = Number(parts.find((part) => part.type === "month").value) + offset;
+  while (month <= 0) {
+    month += 12;
+    year -= 1;
+  }
+  while (month > 12) {
+    month -= 12;
+    year += 1;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function renderSiteDataRunner() {
+  const block = el("section", "intake-block");
+  block.id = "sitedata-runner";
+  block.append(el("h2", null, "SITEDATA"));
+  block.append(el("p", "clamp", "只在点击按钮时调用 SiteData CLI。页面刷新不会拉榜单。"));
+  if (sitedataConnector) {
+    block.append(el("div", "clamp", `SiteData CLI: ${sitedataConnector.status || "not_configured"}`));
+    (sitedataConnector.details || []).forEach((line) => block.append(el("div", "clamp", line)));
+    if (sitedataConnector.message) block.append(el("div", "clamp", sitedataConnector.message));
+  }
+  const period = el("select");
+  period.id = "sitedata-period";
+  [
+    ["current", "current"],
+    ["archive", "archive"],
+    [periodMonth(0), `当前月份 ${periodMonth(0)}`],
+    [periodMonth(-1), `上个月 ${periodMonth(-1)}`],
+    ["custom", "自定义 YYYY-MM"],
+  ].forEach(([value, label]) => {
+    const option = el("option", null, label);
+    option.value = value;
+    period.append(option);
+  });
+  const custom = el("input");
+  custom.id = "sitedata-custom-period";
+  custom.placeholder = "YYYY-MM";
+  const toggle = el("label", null, " auto_create_dossier");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = Boolean(sitedataSettings.auto_create_dossier);
+  checkbox.addEventListener("change", async () => {
+    checkbox.disabled = true;
+    try {
+      const data = await postDossier("/api/sitedata/settings", { auto_create_dossier: checkbox.checked });
+      sitedataSettings = data;
+      jobEl.textContent = checkbox.checked ? "已打开自动建档" : "已关闭自动建档";
+    } catch (error) {
+      jobEl.textContent = error.message || "设置失败";
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+  toggle.prepend(checkbox);
+  const actions = el("div", "filter-bar");
+  actions.append(period, custom, toggle);
+  [
+    ["Run Traffic Growth", "traffic_growth"],
+    ["Run DR Growth", "domain_rating_growth"],
+    ["Run Payment Traffic", "payment_traffic"],
+    ["Run All", ""],
+  ].forEach(([label, rankingType]) => {
+    const button = el("button", null, label);
+    button.type = "button";
+    button.addEventListener("click", () => runSiteDataRanking(rankingType, button));
+    actions.append(button);
+  });
+  block.append(actions);
+  const result = el("div");
+  result.id = "sitedata-result";
+  block.append(result);
+  return block;
+}
+
+function showSiteDataResult(line) {
+  jobEl.textContent = line;
+  const box = document.getElementById("sitedata-result");
+  if (box) box.textContent = line;
+}
+
+async function runSiteDataRanking(rankingType, button) {
+  const selected = document.getElementById("sitedata-period")?.value || "current";
+  const custom = (document.getElementById("sitedata-custom-period")?.value || "").trim();
+  let period = "current";
+  let month = "";
+  if (selected === "current") {
+    period = "current";
+  } else if (selected === "archive" || selected === "custom") {
+    period = "archive";
+    month = custom;
+  } else {
+    period = "archive";
+    month = selected;
+  }
+  if (period === "archive" && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    showSiteDataResult("month 必须是 YYYY-MM");
+    return;
+  }
+  button.disabled = true;
+  showSiteDataResult("运行 SiteData");
+  try {
+    const data = rankingType
+      ? await postDossier("/api/sitedata/rankings/run", { ranking_type: rankingType, period, month, limit: 100 })
+      : await postDossier("/api/sitedata/rankings/run-all", { period, month, limit: 100 });
+    if (data.results) {
+      const lines = data.results.map((item) => `${item.rankingType || item.ranking_type}: ${item.status} created ${item.records_created}${item.message ? ` · ${item.message}` : ""}`);
+      showSiteDataResult([data.status, ...lines].join(" | "));
+    } else if (data.status === "ok") {
+      showSiteDataResult(`${data.status} · created ${data.records_created} · skipped ${data.records_skipped} · feed ${data.feed_created} · opportunities ${data.opportunities_updated} · ${data.elapsed_ms}ms`);
+    } else {
+      showSiteDataResult(data.message || data.status || "SiteData 运行失败");
+    }
+  } catch (error) {
+    showSiteDataResult(error.message || "SiteData 运行失败");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function statusLabel(value) {
+  return String(value || "watch").replaceAll("_", " ");
+}
+
+function renderDossierCard() {
+  const card = el("section", "cockpit-card dash-wide");
+  card.id = "top-dossiers";
+  card.append(el("h2", null, "TOP INTELLIGENCE DOSSIERS"));
+  const rows = dashboardDossiers.items || [];
+  if (!rows.length) {
+    card.append(el("div", "empty", "还没有案卷。从 Feed、外部机会，或 Dossiers 里的手动录入创建。"));
+    return card;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    const top = el("div", "slot-row");
+    top.append(el("b", null, row.domain || row.title || "--"));
+    top.append(el("span", null, `${row.priority_level || "P3"} / ${statusLabel(row.opportunity_status)} · score ${row.evidence_score}`));
+    line.append(top);
+    line.append(el("div", "clamp", row.one_line_judgment || "--"));
+    line.append(el("div", "clamp", (row.evidence_tags || []).join(" + ") || "暂无证据标签"));
+    line.append(el("div", "clamp", `缺口：${(row.missing_evidence || []).join("；") || "--"}`));
+    line.append(el("div", "clamp", `Next: ${row.next_action || "--"}`));
+    line.addEventListener("click", () => openDossier(row.id));
+    card.append(line);
+  });
+  return card;
+}
+
+function deskDossierActions(domain, dossierId, feedRow) {
+  const known = dossierId || (dashboardDossiers.items || []).find((row) => (row.domain || "") === domain)?.id;
+  const actions = el("div", "filter-bar");
+  const primary = el("button", null, known ? "Open Dossier" : "Create Dossier");
+  primary.type = "button";
+  primary.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (known) openDossier(known);
+    else if (feedRow) runDossierFeedAction(feedRow, "create", primary);
+    else runDomainDossier(domain, "create", primary);
+  });
+  const attach = el("button", null, "Attach Evidence");
+  attach.type = "button";
+  attach.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (feedRow) runDossierFeedAction(feedRow, "attach", attach);
+    else runDomainDossier(domain, "create", attach);
+  });
+  actions.append(primary, attach);
+  return actions;
+}
+
+function domainDossierActions(domain) {
+  const actions = el("div", "filter-bar");
+  [
+    ["Open Dossier", "open"],
+    ["Create Dossier", "create"],
+    ["Add to Watchlist", "watch"],
+    ["Research Next", "research"],
+  ].forEach(([label, action]) => {
+    const button = el("button", null, label);
+    button.type = "button";
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runDomainDossier(domain, action, button);
+    });
+    actions.append(button);
+  });
+  return actions;
+}
+
+async function postDossier(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "操作失败");
+  return data;
+}
+
+async function runDossierFeedAction(row, action, button) {
+  button.disabled = true;
+  try {
+    const data = await postDossier("/api/dossiers/from-feed", { feed_id: row.id, action });
+    jobEl.textContent = data.message || "已处理";
+    if (action === "ignore") {
+      if (viewMode === "feed") loadFeedPage();
+      else if (viewMode === "dashboard") loadDashboard();
+      return;
+    }
+    if (data.dossier_id) openDossier(data.dossier_id);
+  } catch (error) {
+    jobEl.textContent = error.message || "操作失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function runDomainDossier(domain, action, button) {
+  button.disabled = true;
+  try {
+    const data = await postDossier("/api/dossiers/from-domain", { domain, action });
+    jobEl.textContent = data.message || "已处理";
+    if (data.dossier_id) openDossier(data.dossier_id);
+  } catch (error) {
+    jobEl.textContent = error.message || "操作失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function attachExplorerRecord(recordId, button) {
+  button.disabled = true;
+  try {
+    const data = await postDossier("/api/dossiers/from-record", { record_id: recordId });
+    jobEl.textContent = data.message || "已挂到案卷";
+    if (data.dossier_id) openDossier(data.dossier_id);
+  } catch (error) {
+    jobEl.textContent = error.message || "挂接失败";
+    button.disabled = false;
+  }
+}
+
+function manualIntakeForm(onDone) {
+  const form = el("form", "page-form");
+  form.id = "manual-intake";
+  const fields = [
+    ["title", "title"],
+    ["domain", "domain"],
+    ["source_name", "source_name"],
+    ["note", "note / 群聊文字 / 人工判断"],
+    ["metric_name", "metric_name"],
+    ["metric_value", "metric_value"],
+    ["period_month", "period_month"],
+    ["confidence", "confidence"],
+  ];
+  const inputs = {};
+  fields.forEach(([name, placeholder]) => {
+    const input = name === "note" ? document.createElement("textarea") : document.createElement("input");
+    input.name = name;
+    input.placeholder = placeholder;
+    if (name === "domain") input.required = true;
+    inputs[name] = input;
+    form.append(input);
+  });
+  const sourceType = document.createElement("select");
+  ["manual_note", "chat_note", "news", "screenshot", "traffic", "payment", "authority", "serp", "crawl"].forEach((value) => {
+    const option = el("option", null, value);
+    option.value = value;
+    sourceType.append(option);
+  });
+  sourceType.name = "source_type";
+  const evidenceType = document.createElement("select");
+  ["manual_note", "chat_note", "traffic", "payment", "authority", "serp", "competitor_page", "crawl", "gsc", "ga4", "news", "screenshot"].forEach((value) => {
+    const option = el("option", null, value);
+    option.value = value;
+    evidenceType.append(option);
+  });
+  evidenceType.name = "evidence_type";
+  form.append(sourceType, evidenceType);
+  const button = el("button", null, "写入案卷");
+  button.type = "submit";
+  form.append(button);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    try {
+      const body = {
+        title: inputs.title.value.trim(),
+        domain: inputs.domain.value.trim(),
+        source_name: inputs.source_name.value.trim(),
+        source_type: sourceType.value,
+        note: inputs.note.value.trim(),
+        evidence_type: evidenceType.value,
+        metric_name: inputs.metric_name.value.trim(),
+        metric_value: inputs.metric_value.value.trim(),
+        period_month: inputs.period_month.value.trim(),
+        confidence: inputs.confidence.value.trim(),
+      };
+      const data = await postDossier("/api/dossiers/manual", body);
+      jobEl.textContent = data.message || "已写入案卷";
+      if (onDone) onDone(data);
+      else if (data.dossier_id) openDossier(data.dossier_id);
+    } catch (error) {
+      jobEl.textContent = error.message || "写入失败";
+      button.disabled = false;
+    }
+  });
+  return form;
+}
+
+async function loadDossierList() {
+  const data = await loadJsonObject("/api/dossiers?limit=50");
+  const root = document.getElementById("cockpit");
+  if (!root) return;
+  root.replaceChildren();
+  const page = el("section", "cockpit-card");
+  page.id = "dossier-list";
+  page.append(el("h2", null, "MANUAL INTELLIGENCE INTAKE"));
+  page.append(el("p", "clamp", "粘贴群聊、网址、截图备注或人工判断。只写入本地案卷，不调用模型，不请求外部 API。"));
+  page.append(manualIntakeForm());
+  page.append(el("h2", null, "DOSSIERS"));
+  const rows = (data && data.items) || [];
+  if (!rows.length) page.append(el("div", "empty", "暂无案卷"));
+  rows.forEach((row) => {
+    const line = el("div", "feed-line");
+    line.append(el("div", null, `${row.domain} · ${row.priority_level} · ${statusLabel(row.opportunity_status)} · ${row.evidence_score}`));
+    line.append(el("div", "clamp", row.one_line_judgment || "--"));
+    line.addEventListener("click", () => openDossier(row.id));
+    page.append(line);
+  });
+  root.append(page);
+}
+
+function renderDossier(data) {
+  const root = document.getElementById("cockpit");
+  if (!root || !data || !data.dossier) return;
+  const dossier = data.dossier;
+  root.replaceChildren();
+  const glance = el("section", "cockpit-card dash-wide");
+  glance.id = "dossier-glance";
+  glance.append(el("h2", null, "AT A GLANCE"));
+  glance.append(el("div", "headline", `${dossier.product_name || dossier.domain} · ${dossier.domain}`));
+  glance.append(el("p", null, dossier.one_line_judgment || "--"));
+  glance.append(el("div", "clamp", `Status: ${statusLabel(dossier.opportunity_status)}`));
+  glance.append(el("div", "clamp", `Priority: ${dossier.priority_level} · Confidence: ${dossier.confidence} · Score: ${dossier.evidence_score}`));
+  glance.append(el("div", "clamp", `Updated: ${formatCollectTime(dossier.updated_at)}`));
+  if (data.build_note) glance.append(el("div", "gap-line", data.build_note));
+  const summary = el("section", "cockpit-card dash-wide");
+  summary.id = "dossier-summary";
+  summary.append(el("h2", null, "EVIDENCE SUMMARY"));
+  const grid = el("div", "slot-grid");
+  (data.summary || []).forEach((card) => {
+    const box = el("section", "cockpit-card");
+    box.append(el("h2", null, card.name));
+    box.append(el("b", slotClass(card.status), card.status));
+    box.append(el("div", "clamp", `记录 ${card.count}`));
+    box.append(el("div", "clamp", `最近月份 ${card.latest_month || "--"}`));
+    box.append(el("div", "clamp", card.metric || "--"));
+    box.append(el("div", "clamp", card.source || "--"));
+    grid.append(box);
+  });
+  summary.append(grid);
+  const timeline = el("section", "cockpit-card dash-wide");
+  timeline.id = "dossier-timeline";
+  timeline.append(el("h2", null, "EVIDENCE TIMELINE"));
+  if (!(data.timeline || []).length) timeline.append(el("div", "empty", "暂无证据"));
+  (data.timeline || []).forEach((item) => {
+    const line = el("div", "feed-line");
+    line.append(el("div", "clamp", `${formatCollectTime(item.created_at)} · ${item.evidence_type} · ${item.source_name || "--"}`));
+    line.append(el("div", null, item.title || "--"));
+    const metric = [item.metric_name, item.metric_value, item.metric_unit].filter(Boolean).join(" ");
+    if (metric) line.append(el("div", "clamp", metric));
+    if (item.content) line.append(el("div", "clamp", item.content));
+    if (item.source_url) {
+      const link = el("a", null, item.source_url);
+      link.href = item.source_url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      line.append(link);
+    }
+    if (item.screenshot_path) {
+      const link = el("a", null, "查看截图");
+      link.href = `/api/dossiers/${dossier.id}/evidence/${item.id}/file`;
+      link.target = "_blank";
+      line.append(link);
+    }
+    timeline.append(line);
+  });
+  const sources = el("section", "cockpit-card dash-wide");
+  sources.id = "dossier-sources";
+  sources.append(el("h2", null, "SOURCE PANEL"));
+  if (!(data.sources || []).length) sources.append(el("div", "empty", "暂无来源"));
+  (data.sources || []).forEach((item) => {
+    sources.append(el("div", "clamp", `${item.source_name || "--"} · ${item.source_type} · trust ${item.trust_level} · ${formatCollectTime(item.captured_at)} · ${item.original_file || item.original_url || "--"}`));
+  });
+  const missing = el("section", "cockpit-card dash-wide");
+  missing.id = "dossier-missing";
+  missing.append(el("h2", null, "MISSING EVIDENCE"));
+  (data.missing_evidence || []).forEach((gap) => missing.append(el("div", "gap-line", gap)));
+  if (!(data.missing_evidence || []).length) missing.append(el("div", "clamp", "主要证据类型已覆盖。正式 Build 仍要看 Validation。"));
+  const actions = el("section", "cockpit-card dash-wide");
+  actions.id = "dossier-actions";
+  actions.append(el("h2", null, "NEXT ACTIONS"));
+  const bar = el("div", "filter-bar");
+  [
+    ["Run SERP", "run_serp"],
+    ["Crawl Domain", "crawl"],
+    ["Add Competitor Page", "competitor"],
+    ["Add Keyword", "keyword"],
+    ["Mark as Priority Research", "priority"],
+    ["Reject", "reject"],
+  ].forEach(([label, action]) => {
+    const button = el("button", null, label);
+    button.type = "button";
+    button.addEventListener("click", () => runDossierAction(dossier.id, action, button));
+    bar.append(button);
+  });
+  const noteButton = el("button", null, "Add Manual Note");
+  noteButton.type = "button";
+  const shotButton = el("button", null, "Upload Screenshot");
+  shotButton.type = "button";
+  bar.append(noteButton, shotButton);
+  actions.append(bar);
+  const noteBox = el("div");
+  noteBox.hidden = true;
+  noteButton.addEventListener("click", () => {
+    noteBox.hidden = false;
+    noteBox.replaceChildren(manualIntakeForm((result) => openDossier(result.dossier_id || dossier.id)));
+    const domainInput = noteBox.querySelector("input[name=domain]");
+    if (domainInput) domainInput.value = dossier.domain;
+  });
+  const shotBox = el("form", "page-form");
+  shotBox.hidden = true;
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "image/*";
+  const shotNote = document.createElement("textarea");
+  shotNote.placeholder = "note";
+  const shotMetric = document.createElement("input");
+  shotMetric.placeholder = "metric_name";
+  const shotValue = document.createElement("input");
+  shotValue.placeholder = "metric_value";
+  const shotMonth = document.createElement("input");
+  shotMonth.placeholder = "period_month";
+  const shotSubmit = el("button", null, "保存截图证据");
+  shotSubmit.type = "submit";
+  shotBox.append(file, shotNote, shotMetric, shotValue, shotMonth, shotSubmit);
+  shotBox.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!file.files || !file.files[0]) {
+      jobEl.textContent = "请选择截图";
+      return;
+    }
+    shotSubmit.disabled = true;
+    const body = new FormData();
+    body.append("file", file.files[0]);
+    body.append("note", shotNote.value.trim());
+    body.append("metric_name", shotMetric.value.trim());
+    body.append("metric_value", shotValue.value.trim());
+    body.append("period_month", shotMonth.value.trim());
+    body.append("title", file.files[0].name);
+    try {
+      const response = await fetch(`/api/dossiers/${dossier.id}/screenshot`, { method: "POST", body });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "上传失败");
+      jobEl.textContent = result.message || "已保存截图证据";
+      openDossier(dossier.id);
+    } catch (error) {
+      jobEl.textContent = error.message || "上传失败";
+      shotSubmit.disabled = false;
+    }
+  });
+  shotButton.addEventListener("click", () => {
+    shotBox.hidden = false;
+  });
+  actions.append(noteBox, shotBox);
+  root.append(glance, summary, timeline, sources, missing, actions);
+}
+
+async function openDossier(id) {
+  viewMode = "dossier";
+  applyChrome("dossier");
+  const next = `/dossiers/${id}`;
+  if (location.pathname !== next) history.pushState({}, "", next);
+  const root = document.getElementById("cockpit");
+  if (root) root.replaceChildren(el("div", "hint", "加载案卷"));
+  const data = await loadJsonObject(`/api/dossiers/${id}`);
+  if (!data || !data.dossier) {
+    if (root) root.replaceChildren(el("div", "error", "案卷不存在"));
+    return;
+  }
+  renderDossier(data);
+}
+
+async function runDossierAction(dossierId, action, button) {
+  button.disabled = true;
+  jobEl.textContent = action;
+  try {
+    const data = await postDossier(`/api/dossiers/${dossierId}/action`, { action });
+    jobEl.textContent = data.message || "已处理";
+    await openDossier(dossierId);
+  } catch (error) {
+    jobEl.textContent = error.message || "操作失败";
+    button.disabled = false;
+  }
+}
+
 collectBtn.addEventListener("click", runCollect);
 document.getElementById("view-dashboard").addEventListener("click", () => setView("dashboard"));
 document.getElementById("view-feed").addEventListener("click", () => setView("feed"));
+document.getElementById("view-dossiers").addEventListener("click", () => setView("dossiers"));
 document.getElementById("view-explorer").addEventListener("click", () => setView("explorer"));
 document.getElementById("view-external").addEventListener("click", () => setView("external"));
 document.getElementById("collect-now").addEventListener("click", runCollect);
@@ -3601,7 +4267,20 @@ document.getElementById("seed-keywords").addEventListener("click", seedKeywordPo
 document.getElementById("add-competitor").addEventListener("click", showCompetitorForm);
 document.getElementById("add-source").addEventListener("click", showSourceForm);
 document.getElementById("import-csv").addEventListener("click", showImportForm);
-loadDashboard().catch(() => {
-  const root = document.getElementById("cockpit");
-  if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
+window.addEventListener("popstate", () => {
+  const match = location.pathname.match(/^\/dossiers\/(\d+)$/);
+  if (match) openDossier(Number(match[1]));
+  else setView("dashboard");
 });
+const dossierRoute = location.pathname.match(/^\/dossiers\/(\d+)$/);
+if (dossierRoute) {
+  openDossier(Number(dossierRoute[1])).catch(() => {
+    const root = document.getElementById("cockpit");
+    if (root) root.replaceChildren(el("div", "error", "案卷加载失败"));
+  });
+} else {
+  loadDashboard().catch(() => {
+    const root = document.getElementById("cockpit");
+    if (root) root.replaceChildren(el("div", "error", "看板加载失败"));
+  });
+}

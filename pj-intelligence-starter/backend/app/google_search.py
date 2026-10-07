@@ -118,7 +118,7 @@ def _google_provider_row() -> dict:
     }
 
 
-def provider_health() -> dict:
+def provider_health(probe_sitedata: bool = False) -> dict:
     serper_enabled = _env_flag("SERPER_ENABLED")
     serper_configured = _env_set("SERPER_API_KEY")
     serper_ready = serp_provider() == "serper" and serper_enabled and serper_configured
@@ -132,6 +132,7 @@ def provider_health() -> dict:
 
     snap = serper_snapshot()
     last_code = snap.get("status_code")
+    site = _sitedata_health(probe_sitedata)
     return {
         "serp_provider": serp_provider(),
         "providers": [
@@ -161,6 +162,34 @@ def provider_health() -> dict:
             _planned_ga4_row(),
             _planned_dataforseo_row(),
             grsai_health(),
+            _sitedata_provider_row(site),
+        ],
+        "sitedata": site,
+    }
+
+
+def _sitedata_health(probe: bool) -> dict:
+    from app.sitedata import health_view, probe as probe_sitedata
+
+    site = probe_sitedata() if probe else health_view()
+    return site
+
+
+def _sitedata_provider_row(site: dict) -> dict:
+    apis = ", ".join(site.get("available_apis") or []) or "--"
+    return {
+        "name": "SiteData",
+        "type": "rankings",
+        "enabled": True,
+        "configured": bool(site.get("configured")),
+        "status": site.get("status") or "not_configured",
+        "message": site.get("note") or "",
+        "details": [
+            f"OAuth status: {site.get('auth') or 'missing'}",
+            f"Available APIs: {apis}",
+            f"Last run time: {site.get('last_run_at') or '--'}",
+            f"Last status: {site.get('last_status') or '--'}",
+            f"Last error: {site.get('last_error') or '--'}",
         ],
     }
 

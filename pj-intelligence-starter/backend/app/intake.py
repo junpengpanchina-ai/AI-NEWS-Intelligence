@@ -973,6 +973,7 @@ def intake_overview() -> dict:
         _connector_from("gsc", "Google Search Console", by_name.get("GSC", {}), ["impressions", "clicks", "ctr", "position"]),
         _connector_from("ga4", "GA4", by_name.get("GA4", {}), ["sessions", "activeUsers", "conversions"]),
         _connector_from("dataforseo", "DataForSEO", by_name.get("DataForSEO", {}), ["SERP 批量", "keyword volume"]),
+        _connector_from("sitedata", "SiteData CLI", by_name.get("SiteData", {}), ["traffic_growth", "domain_rating_growth", "payment_traffic"]),
     ]
     crawl = _crawl_summary()
     imports = _import_summary()

@@ -31,6 +31,19 @@ def _sample_host(value: str) -> bool:
     return host in {"example.com", "test.com"} or host.endswith(".example.com") or host.endswith(".test.com")
 
 
+_NOISE_LABELS = {"demo", "sample", "test", "example", "localhost"}
+_TIER_ORDER = {"P0_priority": 0, "P1_research": 1, "P2_watch": 2, "P3_noise": 3}
+
+
+def _desk_noise(value: str) -> bool:
+    host = _host(value)
+    if not host or _sample_host(host):
+        return True
+    if host in {"localhost", "demo.com", "sample.com"} or host.endswith(".localhost"):
+        return True
+    return any(part in _NOISE_LABELS for part in host.split(".") if part)
+
+
 def _num(value) -> float | None:
     text = str(value or "").strip().replace(",", "").replace("%", "")
     if not text:
@@ -169,7 +182,21 @@ def _record_item(row, batch_id: int | None) -> dict:
         "period_month": _text(raw.get("period_month") or row["time_range"]),
         "dataset_type": _text(raw.get("dataset_type")),
         "provider": provider,
+        "ranking_type": _text(raw.get("ranking_type")),
+        "category": _text(raw.get("category") or (raw.get("source_row") or {}).get("category") if isinstance(raw.get("source_row"), dict) else raw.get("category")),
     }
+    kind = normalized["ranking_type"]
+    if kind == "domain_rating_growth":
+        metric_keys = ("dr_growth", "current_dr", "domain_rating")
+    elif kind == "payment_traffic":
+        metric_keys = ("payment_traffic", "monthly_traffic", "domain_rating")
+    else:
+        metric_keys = ("traffic_growth", "growth_rate", "current_traffic", "monthly_traffic")
+    main_metric = ""
+    for key in metric_keys:
+        if normalized.get(key):
+            main_metric = f"{key} {normalized[key]}"
+            break
     return {
         "id": int(row["id"]),
         "domain": domain,
@@ -188,6 +215,9 @@ def _record_item(row, batch_id: int | None) -> dict:
         "previous_dr": normalized["previous_dr"],
         "dr_growth": normalized["dr_growth"],
         "domain_rating": normalized["domain_rating"],
+        "ranking_type": normalized["ranking_type"],
+        "category": normalized["category"],
+        "main_metric": main_metric,
         "source_name": _text(row["source_name"]),
         "original_file_name": _text(raw.get("original_file_name")),
         "batch_id": batch_id,
@@ -432,6 +462,8 @@ def _blank_domain() -> dict:
         "competitor": False,
         "news": False,
         "product_hunt": False,
+        "sitedata": set(),
+        "sitedata_top": False,
         "latest": "",
     }
 
@@ -450,12 +482,48 @@ def _keep_month(bucket: dict, month: str) -> None:
         bucket["latest"] = month
 
 
+def _opportunity_tier(score: int, payment: bool, traffic: bool, authority: bool, noise: bool) -> tuple[str, str]:
+    if noise:
+        return "P3_noise", "样例、演示或本地域名，不进入首页机会榜"
+    pair = (payment and traffic) or (payment and authority) or (traffic and authority)
+    if score >= 85 and pair:
+        return "P0_priority", "分数达到 85，且支付、流量、权重里至少两类同时存在"
+    if score >= 70 or payment or (traffic and authority):
+        return "P1_research", "达到研究线，或已有支付信号，或流量与权重同时存在"
+    single = sum(1 for present in (payment, traffic, authority) if present) == 1
+    if score >= 50 or single:
+        return "P2_watch", "分数达到 50，或只有单一强信号"
+    return "P3_noise", "分数低或关键信息缺失"
+
+
+def _next_action(action: str, missing: list[str]) -> str:
+    mapped = {
+        "Traffic Growth Watch": "抓页面、查关键词、看是否有注册和付费入口。",
+        "Traffic Signal Only": "抓页面、查关键词、看是否有注册和付费入口。",
+        "Watch / Research": "抓页面、查关键词、看是否有注册和付费入口。",
+        "Authority Growth Watch": "查反链、抓页面、补 SERP。",
+        "Authority Signal Only": "查反链、抓页面、补 SERP。",
+        "SEO Teardown": "查反链、抓页面、补 SERP。",
+        "Payment Signal Review": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+        "Payment Signal Only": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+        "Commercial Research": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+        "Priority Research": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+        "Page Teardown": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+    }
+    if action in mapped:
+        return mapped[action]
+    if missing:
+        return f"先补齐{'、'.join(missing[:3])}，再决定是否拆解。"
+    return "打开案卷核对证据。"
+
+
 def external_opportunities(
     min_score: int | None = None,
     evidence_type: str | None = None,
     domain: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
+    home: bool = False,
 ) -> dict:
     size, start = _page(limit, offset)
     conn = connect()
@@ -468,7 +536,8 @@ def external_opportunities(
                    json_extract(raw_json, '$.traffic_growth') AS traffic_growth,
                    json_extract(raw_json, '$.growth_rate') AS growth_rate,
                    json_extract(raw_json, '$.dr_growth') AS dr_growth,
-                   json_extract(raw_json, '$.keyword') AS keyword
+                   json_extract(raw_json, '$.keyword') AS keyword,
+                   json_extract(raw_json, '$.provider') AS provider
             FROM raw_source_records
             WHERE lower(COALESCE(status, '')) IN ('imported', 'confirmed')
               AND record_type IN ('payment_signal', 'traffic_signal', 'authority_signal', 'serp_result')
@@ -519,6 +588,12 @@ def external_opportunities(
             bucket["dr_best"], bucket["dr_label"] = _keep_max(
                 bucket["dr_best"], bucket["dr_label"], row["dr_growth"], row["dr_growth"]
             )
+        if (row["provider"] or "").lower() == "sitedata":
+            label = {"payment_signal": "payment", "traffic_signal": "traffic", "authority_signal": "authority"}.get(kind)
+            if label:
+                bucket["sitedata"].add(label)
+            if rank is not None and 0 < rank <= 100:
+                bucket["sitedata_top"] = True
         elif kind == "serp_result":
             bucket["serp"] = True
             keyword = _text(row["normalized_keyword"] or row["keyword"])
@@ -585,10 +660,33 @@ def external_opportunities(
         evidence_count = sum(1 for present in flags.values() if present)
         if evidence_count >= 3:
             score += 20
+        sitedata = bucket["sitedata"]
+        if bucket["sitedata_top"]:
+            score += 10
+        if len(sitedata) >= 3:
+            score += 25
+        elif len(sitedata) >= 2:
+            score += 15
         score = min(score, 100)
         if floor is not None and score < floor:
             continue
-        if payment and traffic and authority:
+        if sitedata:
+            site_payment = "payment" in sitedata
+            site_traffic = "traffic" in sitedata
+            site_authority = "authority" in sitedata
+            if site_payment and site_traffic and site_authority:
+                action = "Priority Research"
+            elif site_payment and site_traffic:
+                action = "Commercial Research"
+            elif site_traffic and site_authority:
+                action = "SEO Teardown"
+            elif site_payment:
+                action = "Payment Signal Review"
+            elif site_traffic:
+                action = "Traffic Growth Watch"
+            else:
+                action = "Authority Growth Watch"
+        elif payment and traffic and authority:
             action = "Priority Research"
         elif payment and serp and competitor:
             action = "Page Teardown"
@@ -617,6 +715,29 @@ def external_opportunities(
             tags.append("SERP")
         if competitor:
             tags.append("Competitor")
+        missing = []
+        if not payment:
+            missing.append("Payment")
+        if not traffic:
+            missing.append("Traffic")
+        if not authority:
+            missing.append("Authority")
+        if not serp:
+            missing.append("SERP")
+        if not competitor:
+            missing.append("Competitor")
+        missing.append("Validation")
+        noise = _desk_noise(host)
+        tier, reason = _opportunity_tier(score, payment, traffic, authority, noise)
+        latest_signal = ""
+        if bucket["payment_label"]:
+            latest_signal = f"payment {bucket['payment_label']}"
+        elif bucket["traffic_label"]:
+            latest_signal = f"traffic {bucket['traffic_label']}"
+        elif bucket["dr_label"]:
+            latest_signal = f"authority {bucket['dr_label']}"
+        elif bucket["serp_keyword"]:
+            latest_signal = f"serp {bucket['serp_keyword']}"
         items.append(
             {
                 "domain": host,
@@ -634,10 +755,26 @@ def external_opportunities(
                 "best_dr_growth": bucket["dr_label"],
                 "recommended_action": action,
                 "tags": tags,
+                "opportunity_tier": tier,
+                "evidence_tags": list(tags),
+                "missing_evidence": missing,
+                "next_action": _next_action(action, missing),
+                "reason": reason,
+                "latest_signal": latest_signal,
                 "_pay": bucket["payment_best"] or 0,
             }
         )
-    items.sort(key=lambda item: (-item["opportunity_score"], -item["evidence_count"], -item["_pay"], item["domain"]))
+    if home:
+        items = [item for item in items if item["opportunity_tier"] != "P3_noise" and not _desk_noise(item["domain"])]
+    items.sort(
+        key=lambda item: (
+            _TIER_ORDER.get(item["opportunity_tier"], 9),
+            -item["opportunity_score"],
+            -item["evidence_count"],
+            -item["_pay"],
+            item["domain"],
+        )
+    )
     total = len(items)
     page = []
     for item in items[start : start + size]:

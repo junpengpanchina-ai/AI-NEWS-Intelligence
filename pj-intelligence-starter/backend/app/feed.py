@@ -551,6 +551,114 @@ def _diverse(rows, limit: int) -> list:
     return picked
 
 
+_DESK_COPY = {
+    "payment": {
+        "title": "{domain} appears in SiteData payment traffic ranking",
+        "why": "该域名出现在支付流量榜，说明存在商业化信号，可进入支付验证池。",
+        "next": "抓取首页和 pricing 页面，补 SERP Top 10，确认是否适合拆解。",
+        "tags": ["payment"],
+        "score": 40,
+    },
+    "traffic_growth": {
+        "title": "{domain} appears in traffic growth ranking",
+        "why": "该域名流量近期增长，可能存在可复制的 SEO / 分发路径。",
+        "next": "抓页面、查关键词、看是否有注册和付费入口。",
+        "tags": ["traffic"],
+        "score": 30,
+    },
+    "authority_growth": {
+        "title": "{domain} domain rating is rising",
+        "why": "该域名权重增长，可能有外链、内容集群或 SEO 策略值得拆解。",
+        "next": "查反链、抓页面、补 SERP。",
+        "tags": ["authority"],
+        "score": 25,
+    },
+}
+_TODAY_SOURCES = (
+    "SiteData Payment",
+    "SiteData Traffic",
+    "SiteData DR",
+    "Product Hunt",
+    "Hacker News",
+    "SERP",
+)
+_FEED_COLUMNS = """
+    SELECT id, feed_type, title, domain, url, source_name, signal, why_it_matters,
+           related_keyword, related_opportunity_id, created_at, provider, related_record_id
+    FROM intelligence_feed
+"""
+
+
+def _feed_item(row) -> dict:
+    return {
+        "id": int(row["id"]),
+        "feed_type": row["feed_type"] or "",
+        "title": unescape(row["title"] or ""),
+        "domain": row["domain"] or "",
+        "url": row["url"] or "",
+        "source": row["source_name"] or "",
+        "source_name": row["source_name"] or "",
+        "provider": row["provider"] or "",
+        "related_record_id": row["related_record_id"],
+        "signal": row["signal"] or "",
+        "why": row["why_it_matters"] or "",
+        "why_it_matters": row["why_it_matters"] or "",
+        "related_keyword": row["related_keyword"] or "",
+        "related_opportunity_id": row["related_opportunity_id"],
+        "time": row["created_at"] or "",
+        "created_at": row["created_at"] or "",
+    }
+
+
+def _desk_key(item: dict) -> str:
+    signal = item.get("signal") or ""
+    source = item.get("source_name") or item.get("source") or ""
+    if signal == "payment" or source == "SiteData Payment":
+        return "payment"
+    if signal == "traffic_growth" or source == "SiteData Traffic":
+        return "traffic_growth"
+    if signal == "authority_growth" or source == "SiteData DR":
+        return "authority_growth"
+    return ""
+
+
+def _apply_desk_copy(item: dict) -> None:
+    domain = item.get("domain") or "该域名"
+    key = _desk_key(item)
+    if key:
+        spec = _DESK_COPY[key]
+        item["title"] = spec["title"].format(domain=domain)
+        item["why"] = spec["why"]
+        item["why_it_matters"] = spec["why"]
+        item["next_action"] = spec["next"]
+        item["evidence_tags"] = list(spec["tags"])
+        item["score"] = spec["score"]
+        if not item.get("dossier_id"):
+            gaps = {
+                "payment": "Traffic, Authority, SERP, Competitor, Validation",
+                "traffic_growth": "Payment, Authority, SERP, Competitor, Validation",
+                "authority_growth": "Payment, Traffic, SERP, Competitor, Validation",
+            }
+            item["missing_evidence"] = gaps[key]
+    else:
+        signal = item.get("signal") or item.get("feed_type") or ""
+        item["evidence_tags"] = [signal] if signal else []
+        item["score"] = {"serp": 15, "launch": 15, "news": 10}.get(item.get("feed_type") or "", 10)
+        if not item.get("next_action"):
+            item["next_action"] = "Open Dossier" if item.get("dossier_id") else "Create Dossier"
+    if not item.get("missing_evidence"):
+        item["missing_evidence"] = "Payment, Traffic, Authority, SERP, Competitor, Validation"
+
+
+def _finish_feed(items: list[dict]) -> dict:
+    from app.dossiers import annotate_feed
+
+    annotate_feed(items)
+    for item in items:
+        _apply_desk_copy(item)
+    return {"items": items}
+
+
 def list_feed(limit: int = 20) -> dict:
     sync_local_feed()
     backfill_item_feed()
@@ -566,9 +674,9 @@ def list_feed(limit: int = 20) -> dict:
                 conn.execute(
                     """
                     SELECT id, feed_type, title, domain, url, source_name, signal, why_it_matters,
-                           related_keyword, related_opportunity_id, created_at
+                           related_keyword, related_opportunity_id, created_at, provider, related_record_id
                     FROM intelligence_feed
-                    WHERE source_name = ?
+                    WHERE source_name = ? AND COALESCE(ignored, 0) = 0
                     ORDER BY id DESC
                     LIMIT 4
                     """,
@@ -577,27 +685,55 @@ def list_feed(limit: int = 20) -> dict:
             )
     finally:
         conn.close()
-    items = []
-    for row in _diverse(rows, size):
-        items.append(
-            {
-                "id": int(row["id"]),
-                "feed_type": row["feed_type"] or "",
-                "title": unescape(row["title"] or ""),
-                "domain": row["domain"] or "",
-                "url": row["url"] or "",
-                "source": row["source_name"] or "",
-                "source_name": row["source_name"] or "",
-                "signal": row["signal"] or "",
-                "why": row["why_it_matters"] or "",
-                "why_it_matters": row["why_it_matters"] or "",
-                "related_keyword": row["related_keyword"] or "",
-                "related_opportunity_id": row["related_opportunity_id"],
-                "time": row["created_at"] or "",
-                "created_at": row["created_at"] or "",
-            }
+    return _finish_feed([_feed_item(row) for row in _diverse(rows, size)])
+
+
+def _noise_domain(value: str) -> bool:
+    host = (value or "").lower().split(":")[0]
+    labels = [part for part in host.split(".") if part]
+    return host in {"example.com", "test.com", "localhost"} or any(
+        part in {"demo", "sample", "test", "example", "localhost"} for part in labels
+    )
+
+
+def _latest_feed_rows(conn, where: str, params: tuple, limit: int) -> list:
+    return conn.execute(
+        _FEED_COLUMNS + f" WHERE COALESCE(ignored, 0) = 0 AND {where} ORDER BY id DESC LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+
+
+def today_feed(limit: int = 10) -> dict:
+    size = max(1, min(int(limit or 10), 10))
+    conn = connect()
+    try:
+        buckets = [
+            _latest_feed_rows(conn, "source_name = ?", (name,), 3)
+            for name in _TODAY_SOURCES
+        ]
+        buckets.append(
+            _latest_feed_rows(
+                conn,
+                "feed_type = 'news' AND source_name NOT IN ('Hacker News', 'Product Hunt')",
+                (),
+                3,
+            )
         )
-    return {"items": items}
+        buckets.append(_latest_feed_rows(conn, "lower(COALESCE(source_name, '')) LIKE '%manual%'", (), 2))
+    finally:
+        conn.close()
+    picked = []
+    seen = set()
+    for depth in (0, 1):
+        for bucket in buckets:
+            if len(picked) >= size or depth >= len(bucket):
+                continue
+            row = bucket[depth]
+            if row["id"] in seen or _noise_domain(row["domain"] or ""):
+                continue
+            seen.add(row["id"])
+            picked.append(row)
+    return _finish_feed([_feed_item(row) for row in picked[:size]])
 
 
 def top_rankings(limit: int = 10) -> dict:

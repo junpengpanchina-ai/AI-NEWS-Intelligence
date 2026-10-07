@@ -6,6 +6,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./frontend:/app/frontend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
@@ -14,3 +16,4 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       SERPER_DAILY_LIMIT: ${SERPER_DAILY_LIMIT:-100}
       SERPER_BASE_URL: ${SERPER_BASE_URL:-https://google.serper.dev}
+      SITEDATA_BRIDGE_URL: http://host.docker.internal:8791

@@ -333,6 +333,70 @@ def init_db() -> None:
                 errors_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS intelligence_dossiers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                domain TEXT,
+                product_name TEXT,
+                category TEXT,
+                one_line_judgment TEXT,
+                opportunity_status TEXT,
+                priority_level TEXT,
+                confidence TEXT,
+                evidence_score INTEGER,
+                payment_score INTEGER,
+                traffic_score INTEGER,
+                authority_score INTEGER,
+                serp_score INTEGER,
+                competitor_score INTEGER,
+                validation_score INTEGER,
+                missing_evidence TEXT,
+                recommended_next_actions TEXT,
+                status_locked INTEGER DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_dossier_domain ON intelligence_dossiers(domain);
+
+            CREATE TABLE IF NOT EXISTS dossier_evidence_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dossier_id INTEGER NOT NULL,
+                evidence_type TEXT,
+                source_name TEXT,
+                source_url TEXT,
+                source_domain TEXT,
+                title TEXT,
+                content TEXT,
+                metric_name TEXT,
+                metric_value TEXT,
+                metric_unit TEXT,
+                period_month TEXT,
+                screenshot_path TEXT,
+                raw_json TEXT,
+                confidence TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sitedata_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ranking_type TEXT,
+                period TEXT,
+                status TEXT,
+                records_created INTEGER,
+                records_skipped INTEGER,
+                feed_created INTEGER,
+                opportunities_updated INTEGER,
+                error_message TEXT,
+                elapsed_ms INTEGER,
+                created_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS import_batches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 preview_id TEXT,
@@ -353,6 +417,13 @@ def init_db() -> None:
             SOURCES + [("GitHub Trending", "github", "https://github.com/trending", 2, 1)],
         )
         _ensure_item_columns(conn)
+        feed_columns = {row[1] for row in conn.execute("PRAGMA table_info(intelligence_feed)")}
+        if feed_columns and "ignored" not in feed_columns:
+            conn.execute("ALTER TABLE intelligence_feed ADD COLUMN ignored INTEGER DEFAULT 0")
+        feed_columns = {row[1] for row in conn.execute("PRAGMA table_info(intelligence_feed)")}
+        for name, ddl in (("provider", "TEXT"), ("related_record_id", "INTEGER")):
+            if feed_columns and name not in feed_columns:
+                conn.execute(f"ALTER TABLE intelligence_feed ADD COLUMN {name} {ddl}")
         conn.commit()
         columns = {row[1] for row in conn.execute("PRAGMA table_info(opportunity_cards)")}
         additions = {

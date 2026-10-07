@@ -18,6 +18,8 @@ def _safe_note(note: str) -> str:
     text = re.sub(r"(?i)authorization\s*[:=]\s*\S+", "Authorization [redacted]", text)
     text = re.sub(r"(?i)x-api-key\s*[:=]\s*\S+", "X-API-KEY [redacted]", text)
     text = re.sub(r"(?i)([?&]key=)[^&\s]+", r"\1[redacted]", text)
+    text = re.sub(r"(?i)(access_token|refresh_token|id_token|api[_-]?key)(['\"\s:=]+)[A-Za-z0-9._\-]{8,}", r"\1\2[redacted]", text)
+    text = re.sub(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", "[redacted]", text)
     return text[:500]
 
 

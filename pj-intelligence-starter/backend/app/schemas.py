@@ -354,9 +354,22 @@ class ProviderHealthItem(BaseModel):
     details: list[str] = []
 
 
+class SiteDataHealthOut(BaseModel):
+    provider: str = "sitedata"
+    configured: bool = False
+    status: str = "not_configured"
+    auth: str = ""
+    available_apis: list[str] = []
+    note: str = ""
+    last_run_at: str = ""
+    last_status: str = ""
+    last_error: str = ""
+
+
 class ProviderHealthOut(BaseModel):
     serp_provider: str
     providers: list[ProviderHealthItem]
+    sitedata: SiteDataHealthOut = SiteDataHealthOut()
 
 
 class PromoteSerpIn(BaseModel):
@@ -518,6 +531,9 @@ class ExplorerRecord(BaseModel):
     previous_dr: str = ""
     dr_growth: str = ""
     domain_rating: str = ""
+    ranking_type: str = ""
+    category: str = ""
+    main_metric: str = ""
     source_name: str = ""
     original_file_name: str = ""
     batch_id: int | None = None
@@ -589,6 +605,12 @@ class ExternalOpportunity(BaseModel):
     best_dr_growth: str = ""
     recommended_action: str = ""
     tags: list[str] = []
+    opportunity_tier: str = ""
+    evidence_tags: list[str] = []
+    missing_evidence: list[str] = []
+    next_action: str = ""
+    reason: str = ""
+    latest_signal: str = ""
 
 
 class ExternalOpportunityPage(BaseModel):
@@ -613,6 +635,14 @@ class FeedItem(BaseModel):
     related_keyword: str = ""
     related_opportunity_id: int | None = None
     created_at: str = ""
+    dossier_id: int | None = None
+    provider: str = ""
+    related_record_id: int | None = None
+    evidence_count: int = 0
+    missing_evidence: str = ""
+    next_action: str = ""
+    score: int = 0
+    evidence_tags: list[str] = []
 
 
 class FeedOut(BaseModel):
@@ -677,3 +707,163 @@ class SourceRunOut(BaseModel):
     records_collected: int = 0
     error_message: str = ""
     last_run_at: str = ""
+
+
+class DossierCard(BaseModel):
+    id: int
+    title: str = ""
+    domain: str = ""
+    product_name: str = ""
+    category: str = ""
+    one_line_judgment: str = ""
+    opportunity_status: str = ""
+    priority_level: str = ""
+    confidence: str = ""
+    evidence_score: int = 0
+    payment_score: int = 0
+    traffic_score: int = 0
+    authority_score: int = 0
+    serp_score: int = 0
+    competitor_score: int = 0
+    validation_score: int = 0
+    evidence_tags: list[str] = []
+    missing_evidence: list[str] = []
+    recommended_next_actions: list[str] = []
+    next_action: str = ""
+    evidence_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    formal_build: bool = False
+
+
+class DossierListOut(BaseModel):
+    items: list[DossierCard] = []
+
+
+class EvidenceSummaryCard(BaseModel):
+    name: str = ""
+    key: str = ""
+    status: str = "Missing"
+    count: int = 0
+    latest_month: str = ""
+    metric: str = ""
+    source: str = ""
+
+
+class EvidenceTimelineItem(BaseModel):
+    id: int
+    created_at: str = ""
+    evidence_type: str = ""
+    source_name: str = ""
+    source_url: str = ""
+    title: str = ""
+    content: str = ""
+    metric_name: str = ""
+    metric_value: str = ""
+    metric_unit: str = ""
+    period_month: str = ""
+    screenshot_path: str = ""
+    confidence: str = ""
+
+
+class DossierSourceItem(BaseModel):
+    source_name: str = ""
+    source_type: str = ""
+    trust_level: str = ""
+    captured_at: str = ""
+    original_file: str = ""
+    original_url: str = ""
+
+
+class DossierDetailOut(BaseModel):
+    dossier: DossierCard
+    summary: list[EvidenceSummaryCard] = []
+    timeline: list[EvidenceTimelineItem] = []
+    sources: list[DossierSourceItem] = []
+    missing_evidence: list[str] = []
+    next_actions: list[str] = []
+    build_note: str = ""
+
+
+class DossierActionIn(BaseModel):
+    action: str = ""
+    domain: str = ""
+    feed_id: int = 0
+    record_id: int = 0
+
+
+class DossierActionOut(BaseModel):
+    dossier_id: int = 0
+    created: bool = False
+    message: str = ""
+    opportunity_status: str = ""
+
+
+class SiteDataRunIn(BaseModel):
+    ranking_type: str = ""
+    period: str = "current"
+    month: str = ""
+    limit: int = 100
+
+
+class SiteDataRunOut(BaseModel):
+    provider: str = "SiteData"
+    ranking_type: str = ""
+    rankingType: str = ""
+    period: str = ""
+    month: str = ""
+    status: str = ""
+    message: str = ""
+    records_created: int = 0
+    records_skipped: int = 0
+    feed_created: int = 0
+    opportunities_updated: int = 0
+    elapsed_ms: int = 0
+
+
+class SiteDataRunAllOut(BaseModel):
+    status: str = ""
+    results: list[SiteDataRunOut] = []
+
+
+class SiteDataSignal(BaseModel):
+    ranking_type: str = ""
+    label: str = ""
+    period_month: str = ""
+    count: int = 0
+    top_domains: list[str] = []
+
+
+class SiteDataSignalPage(BaseModel):
+    items: list[SiteDataSignal] = []
+
+
+class SiteDataOpportunity(BaseModel):
+    domain: str = ""
+    score: int = 0
+    signals: list[str] = []
+    latest_period: str = ""
+    next_action: str = ""
+    recommended_action: str = ""
+
+
+class SiteDataOpportunityPage(BaseModel):
+    items: list[SiteDataOpportunity] = []
+
+
+class SiteDataSettings(BaseModel):
+    auto_create_dossier: bool = False
+
+
+class ManualIntakeIn(BaseModel):
+    title: str = ""
+    domain: str = ""
+    source_name: str = ""
+    source_type: str = ""
+    source_url: str = ""
+    note: str = ""
+    evidence_type: str = "manual_note"
+    metric_name: str = ""
+    metric_value: str = ""
+    period_month: str = ""
+    confidence: str = ""

@@ -72,6 +72,7 @@ from app.feed import (
     collect_now,
     collect_status,
     list_feed,
+    today_feed,
     run_source,
     source_records,
     top_rankings,
@@ -115,6 +116,7 @@ from app.opportunities import (
     opportunity_prompt,
     save_opportunity_analysis,
 )
+from app.sitedata import get_settings, recent_signals, run_all, run_rankings, set_auto_create, top_opportunities
 from app.trace import clear_traces, list_traces, record_trace
 from app.schemas import (
     AnalysisOut,
@@ -172,6 +174,29 @@ from app.schemas import (
     FeedOut,
     ImportBatchDetail,
     ImportBatchSummary,
+    SiteDataOpportunityPage,
+    SiteDataRunAllOut,
+    SiteDataRunIn,
+    SiteDataRunOut,
+    SiteDataSettings,
+    SiteDataSignalPage,
+    DossierActionIn,
+    DossierActionOut,
+    DossierDetailOut,
+    DossierListOut,
+    ManualIntakeIn,
+)
+from app.dossiers import (
+    add_evidence,
+    add_screenshot,
+    from_domain,
+    from_feed,
+    from_record,
+    get_dossier,
+    list_dossiers,
+    manual_intake,
+    run_action,
+    screenshot_path,
 )
 
 load_dotenv(project_root() / ".env")
@@ -729,7 +754,43 @@ def import_detail(import_id: int):
 
 @app.get("/api/providers/health", response_model=ProviderHealthOut)
 def providers_health():
-    return provider_health()
+    return provider_health(probe_sitedata=True)
+
+
+@app.post("/api/sitedata/rankings/run", response_model=SiteDataRunOut)
+def sitedata_rankings_run(payload: SiteDataRunIn):
+    try:
+        return run_rankings(payload.ranking_type, payload.period, payload.limit, payload.month)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/sitedata/rankings/run-all", response_model=SiteDataRunAllOut)
+def sitedata_rankings_run_all(payload: SiteDataRunIn):
+    try:
+        return run_all(payload.period, payload.month, payload.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/sitedata/signals", response_model=SiteDataSignalPage)
+def sitedata_signals(limit: int = 20):
+    return recent_signals(limit)
+
+
+@app.get("/api/sitedata/opportunities", response_model=SiteDataOpportunityPage)
+def sitedata_opportunities(limit: int = 10):
+    return top_opportunities(limit)
+
+
+@app.get("/api/sitedata/settings", response_model=SiteDataSettings)
+def sitedata_settings():
+    return get_settings()
+
+
+@app.post("/api/sitedata/settings", response_model=SiteDataSettings)
+def sitedata_settings_update(payload: SiteDataSettings):
+    return set_auto_create(payload.auto_create_dossier)
 
 
 @app.post("/api/providers/google-cse/check", response_model=ProviderHealthOut)
@@ -795,13 +856,20 @@ def external_opportunity_list(
     domain: str | None = None,
     limit: int | None = Query(default=50),
     offset: int | None = Query(default=0),
+    home: bool = False,
 ):
-    return external_opportunities(min_score, evidence_type, domain, limit, offset)
+    return external_opportunities(min_score, evidence_type, domain, limit, offset, home)
 
 
 @app.get("/api/intelligence/feed", response_model=FeedOut)
+@app.get("/api/feed", response_model=FeedOut)
 def intelligence_feed_list(limit: int = 20):
     return list_feed(limit)
+
+
+@app.get("/api/dashboard/today", response_model=FeedOut)
+def dashboard_today(limit: int = 10):
+    return today_feed(limit)
 
 
 @app.post("/api/intelligence/feed/{feed_id}/action", response_model=FeedActionOut)
@@ -900,11 +968,112 @@ def analysis(item_id: int):
     return row
 
 
+def _dossier_error(exc: ValueError) -> HTTPException:
+    missing = str(exc) in {"资讯不存在", "记录不存在", "案卷不存在"}
+    return HTTPException(status_code=404 if missing else 400, detail=str(exc))
+
+
+@app.get("/api/dossiers", response_model=DossierListOut)
+def dossier_list(limit: int = 10):
+    return list_dossiers(limit)
+
+
+@app.get("/api/dossiers/{dossier_id}", response_model=DossierDetailOut)
+def dossier_detail(dossier_id: int):
+    detail = get_dossier(dossier_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="案卷不存在")
+    return detail
+
+
+@app.post("/api/dossiers/manual", response_model=DossierActionOut)
+def dossier_manual(payload: ManualIntakeIn):
+    try:
+        return manual_intake(payload.model_dump())
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/from-feed", response_model=DossierActionOut)
+def dossier_from_feed(payload: DossierActionIn):
+    try:
+        return from_feed(payload.feed_id, payload.action)
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/from-domain", response_model=DossierActionOut)
+def dossier_from_domain(payload: DossierActionIn):
+    try:
+        return from_domain(payload.domain, payload.action)
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/from-record", response_model=DossierActionOut)
+def dossier_from_record(payload: DossierActionIn):
+    try:
+        return from_record(payload.record_id)
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/{dossier_id}/evidence", response_model=DossierActionOut)
+def dossier_add_evidence(dossier_id: int, payload: ManualIntakeIn):
+    try:
+        return add_evidence(dossier_id, payload.model_dump())
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/{dossier_id}/screenshot", response_model=DossierActionOut)
+async def dossier_screenshot(
+    dossier_id: int,
+    file: UploadFile = File(...),
+    note: str = Form(""),
+    metric_name: str = Form(""),
+    metric_value: str = Form(""),
+    period_month: str = Form(""),
+    title: str = Form(""),
+):
+    content = await file.read()
+    try:
+        return add_screenshot(
+            dossier_id,
+            file.filename or "screenshot",
+            content,
+            {"note": note, "metric_name": metric_name, "metric_value": metric_value, "period_month": period_month, "title": title},
+        )
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.post("/api/dossiers/{dossier_id}/action", response_model=DossierActionOut)
+def dossier_action(dossier_id: int, payload: DossierActionIn):
+    try:
+        return run_action(dossier_id, payload.action)
+    except ValueError as exc:
+        raise _dossier_error(exc) from exc
+
+
+@app.get("/api/dossiers/{dossier_id}/evidence/{evidence_id}/file")
+def dossier_screenshot_file(dossier_id: int, evidence_id: int):
+    path = screenshot_path(dossier_id, evidence_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="截图不存在")
+    return FileResponse(path)
+
+
 frontend_dir = project_root() / "frontend"
 
 
 @app.get("/")
 def index_page():
+    return FileResponse(frontend_dir / "index.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/dossiers/{dossier_id}")
+def dossier_page(dossier_id: int):
     return FileResponse(frontend_dir / "index.html", headers={"Cache-Control": "no-store"})
 
 
