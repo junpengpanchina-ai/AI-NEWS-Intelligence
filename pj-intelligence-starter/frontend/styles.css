@@ -1,12 +1,13 @@
 :root {
-  --bg: #070807;
-  --panel: #0c0e0c;
-  --line: #1c241c;
-  --text: #d5ddd2;
-  --dim: #7d887c;
-  --green: #b7d39a;
-  --amber: #d6b15a;
-  --red: #d46a6a;
+  --bg: #08110e;
+  --panel: #101915;
+  --line: rgba(170, 190, 160, 0.18);
+  --text: #e8eee8;
+  --dim: #8e9b91;
+  --green: #a6e38d;
+  --amber: #f1c75b;
+  --red: #e57373;
+  --link: #8fd0d8;
 }
 
 * {
@@ -19,8 +20,8 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-family: system-ui, -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 15px;
 }
 
 body {
@@ -36,7 +37,7 @@ header {
   min-height: 48px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--line);
-  background: #090b09;
+  background: #0b1110;
   flex-wrap: wrap;
 }
 
@@ -96,14 +97,34 @@ header {
 }
 
 button {
-  background: transparent;
-  color: var(--green);
-  border: 1px solid #3e5634;
+  background: #15211b;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
   padding: 6px 10px;
   font-family: inherit;
-  font-size: 12px;
-  letter-spacing: 0.06em;
+  font-size: 13px;
   cursor: pointer;
+}
+
+#primary-nav button.on,
+.admin-nav button.on {
+  color: #08110e;
+  background: var(--green);
+  border-color: var(--green);
+}
+
+a {
+  color: var(--link);
+}
+
+.num,
+.metric b,
+.badge,
+pre,
+.template-csv,
+.prio {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 button:disabled {
@@ -126,8 +147,17 @@ main {
   grid-template-rows: minmax(0, 1fr) 300px;
 }
 
-body[data-screen="dashboard"] #workspace {
+body[data-screen="dashboard"] #workspace,
+body[data-screen="briefing"] #workspace {
   display: none;
+}
+
+body[data-screen="briefing"] #cockpit {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(1080px, 100%);
+  margin: 0 auto;
 }
 
 body[data-screen="workspace"] #cockpit {
@@ -728,6 +758,111 @@ h2 {
   color: var(--red);
 }
 
+.brief-hero {
+  padding: 8px 8px 4px;
+}
+
+.brief-kicker {
+  margin: 0;
+  color: var(--dim);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.brief-lead {
+  margin: 10px 0 16px;
+  font-size: 22px;
+  line-height: 1.45;
+  font-weight: 560;
+}
+
+.brief-metrics,
+.evidence-board,
+.queue-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.brief-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.intel-card,
+.queue-col,
+.evidence-card {
+  border: 1px solid var(--line);
+  background: #0d1612;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.intel-card {
+  margin-top: 10px;
+}
+
+.intel-card h3,
+.queue-col h3,
+.evidence-card h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.prio {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.prio-p0 {
+  background: var(--green);
+  color: #08110e;
+}
+
+.prio-p1 {
+  background: var(--amber);
+  color: #08110e;
+}
+
+.prio-p2 {
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.status-ready {
+  color: var(--green);
+}
+
+.status-partial {
+  color: var(--amber);
+}
+
+.status-missing {
+  color: var(--red);
+}
+
+.dossier-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 280px;
+  gap: 12px;
+  align-items: start;
+}
+
+.dossier-layout .cockpit-card {
+  border-radius: 10px;
+}
+
+.section-label {
+  margin: 0 0 8px;
+  color: var(--dim);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 @media (max-width: 900px) {
   #workspace,
   body[data-focus="work"] #workspace {
@@ -744,8 +879,11 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .metrics,
+  .brief-metrics,
+  .evidence-board,
+  .queue-board {
+    grid-template-columns: 1fr;
   }
 
   #signals,
