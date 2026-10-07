@@ -7,12 +7,13 @@ from urllib.parse import urlparse
 
 from app.db import connect, init_db, project_root
 
-STATUSES = {"watch", "research", "priority_research", "teardown", "build_candidate", "rejected"}
+STATUSES = {"watch", "research", "priority_research", "validation_needed", "teardown", "build_candidate", "rejected"}
 EVIDENCE_TYPES = {
     "news", "chat_note", "screenshot", "traffic", "payment", "authority", "serp",
-    "competitor_page", "crawl", "gsc", "ga4", "manual_note",
+    "competitor_page", "crawl", "gsc", "ga4", "manual_note", "trend",
 }
 _POINTS = {
+    "trend": 15,
     "payment": 25,
     "traffic": 20,
     "authority": 15,
@@ -20,17 +21,17 @@ _POINTS = {
     "competitor": 10,
     "validation": 20,
     "manual": 5,
-    "screenshot": 5,
 }
 _GROUPS = {
+    "trend": {"trend"},
     "payment": {"payment"},
     "traffic": {"traffic"},
     "authority": {"authority"},
     "serp": {"serp"},
     "competitor": {"competitor_page"},
-    "validation": {"gsc", "ga4"},
+    "validation": {"gsc", "ga4", "validation"},
     "manual": {"manual_note", "chat_note"},
-    "screenshot": {"screenshot"},
+    "crawl": {"crawl"},
 }
 _SIGNAL_TYPE = {
     "payment": "payment",
@@ -49,6 +50,8 @@ _RECORD_TYPE = {
     "authority_signal": ("authority", "DR Ranking", "dr_growth"),
     "serp_result": ("serp", "Serper", "rank"),
     "crawl_signal": ("crawl", "Crawl", ""),
+    "trend_signal": ("trend", "Google Trends", "search_volume"),
+    "validation_signal": ("validation", "Validation", ""),
 }
 _SUMMARY = (
     ("payment", "Payment Evidence"),
@@ -59,10 +62,12 @@ _SUMMARY = (
     ("validation", "Validation Evidence"),
 )
 _MISSING = {
-    "serp": "SERP Top 10 未补齐",
-    "competitor": "竞品页面未抓取",
-    "payment": "支付证据不足",
-    "validation": "GSC / GA4 / 注册 / 支付验证缺失",
+    "serp": "没有 SERP Top 10",
+    "competitor": "没有真实竞品页面",
+    "payment": "没有 payment signal",
+    "traffic": "没有 traffic signal",
+    "authority": "没有 authority signal",
+    "validation": "没有 validation signal",
     "pricing": "没有价格页",
     "conversion": "没有转化路径",
 }
@@ -130,9 +135,11 @@ def _present(rows) -> dict[str, bool]:
 def _score_of(flags: dict[str, bool]) -> tuple[int, dict[str, int]]:
     parts = {name: _POINTS[name] if flags.get(name) else 0 for name in _POINTS}
     total = sum(parts.values())
-    if sum(1 for name in _POINTS if flags.get(name)) >= 3:
-        total += 15
-    return min(total, 100), parts
+    if not flags.get("payment") and not flags.get("traffic"):
+        total -= 20
+    if not flags.get("validation") and not flags.get("crawl"):
+        total -= 15
+    return max(0, min(total, 100)), parts
 
 
 def _priority(score: int) -> str:
@@ -164,9 +171,9 @@ def _confidence(score: int) -> str:
 def _auto_status(score: int, flags: dict[str, bool]) -> str:
     market = sum(1 for name in ("payment", "traffic", "authority") if flags.get(name))
     if score >= 85 and market >= 2:
-        return "priority_research"
+        return "build_candidate"
     if score >= 70:
-        return "research"
+        return "validation_needed" if not flags.get("validation") else "research"
     return "watch"
 
 
@@ -180,6 +187,10 @@ def _missing(flags: dict[str, bool]) -> list[str]:
         gaps.append(_MISSING["conversion"])
     if not flags.get("payment"):
         gaps.append(_MISSING["payment"])
+    if not flags.get("traffic"):
+        gaps.append(_MISSING["traffic"])
+    if not flags.get("authority"):
+        gaps.append(_MISSING["authority"])
     if not flags.get("validation"):
         gaps.append(_MISSING["validation"])
     return gaps
@@ -539,7 +550,7 @@ def get_dossier(dossier_id: int) -> dict | None:
         "sources": _sources(evidence),
         "missing_evidence": card["missing_evidence"],
         "next_actions": card["recommended_next_actions"],
-        "build_note": "" if flags.get("validation") else "没有 Validation Evidence，不能正式 Build。",
+        "build_note": "" if flags.get("validation") else "Validation 缺失，不能正式 Build。当前只能是 Build Candidate 或 Evidence Partial。",
     }
 
 
@@ -615,18 +626,31 @@ def from_feed(feed_id: int, action: str) -> dict:
         finally:
             conn.close()
         return {"dossier_id": 0, "created": False, "message": "已忽略", "opportunity_status": ""}
-    if name not in {"create", "attach", "add"}:
+    if name not in {"create", "attach", "add", "research"}:
         raise ValueError("不支持的操作")
     domain = row["domain"] or _host(row["url"] or "")
     dossier_id, created = _insert_dossier(domain, row["title"] or domain, row["why_it_matters"] or "", row["signal"] or "news")
     _attach_feed_row(dossier_id, row)
     recompute(dossier_id, row["why_it_matters"] or "")
+    if name == "research":
+        conn = connect()
+        try:
+            conn.execute(
+                "UPDATE intelligence_dossiers SET opportunity_status = 'research', status_locked = 1, updated_at = ? WHERE id = ?",
+                (_now(), dossier_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     detail = get_dossier(dossier_id)
     status = detail["dossier"]["opportunity_status"] if detail else ""
+    message = "已创建案卷" if created else "已追加证据"
+    if name == "research":
+        message = "已标为下一步研究"
     return {
         "dossier_id": dossier_id,
         "created": created,
-        "message": "已创建案卷" if created else "已追加证据",
+        "message": message,
         "opportunity_status": status,
     }
 
@@ -1000,6 +1024,18 @@ def run_action(dossier_id: int, action: str) -> dict:
         raise ValueError("案卷不存在")
     domain = detail["dossier"]["domain"]
     name = (action or "").strip().lower()
+    if name == "watch":
+        _set_status(dossier_id, "watch")
+        return {"dossier_id": dossier_id, "created": False, "message": "已标为 Watch", "opportunity_status": "watch"}
+    if name == "research":
+        _set_status(dossier_id, "research")
+        return {"dossier_id": dossier_id, "created": False, "message": "已标为 Research", "opportunity_status": "research"}
+    if name == "validation_needed":
+        _set_status(dossier_id, "validation_needed")
+        return {"dossier_id": dossier_id, "created": False, "message": "已标为 Validation Needed", "opportunity_status": "validation_needed"}
+    if name == "build_candidate":
+        _set_status(dossier_id, "build_candidate")
+        return {"dossier_id": dossier_id, "created": False, "message": "已标为 Build Candidate。仍缺 Validation 时不能正式 Build。", "opportunity_status": "build_candidate"}
     if name == "priority":
         _set_status(dossier_id, "priority_research")
         return {"dossier_id": dossier_id, "created": False, "message": "已标为 Priority Research", "opportunity_status": "priority_research"}
@@ -1064,10 +1100,11 @@ def run_action(dossier_id: int, action: str) -> dict:
             result = search_serp(domain, 10, "us", "en")
         except GoogleSearchError as exc:
             raise ValueError(_public(str(exc.detail if hasattr(exc, "detail") else exc))) from exc
+        provider_name = {"google_cse": "Google CSE", "serper": "Serper"}.get(result.get("provider") or "", "SERP")
         for item in result.get("items") or []:
             _add_item(dossier_id, {
                 "evidence_type": "serp",
-                "source_name": "Serper",
+                "source_name": provider_name,
                 "source_url": item.get("link") or "",
                 "source_domain": item.get("displayLink") or domain,
                 "title": item.get("title") or domain,

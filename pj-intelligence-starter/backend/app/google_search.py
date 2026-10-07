@@ -17,7 +17,30 @@ from app.trace import record_trace
 
 GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 MANUAL_CSV_HINT = "当前 SERP_PROVIDER=manual_csv，请使用 Admin → Sources → Data Imports 导入 SERP CSV。"
-GOOGLE_403_SUGGESTION = "切换 manual_csv / Serper / DataForSEO / SerpAPI"
+GOOGLE_CSE_REASON = "This Google Cloud project does not have access to Custom Search JSON API."
+GOOGLE_CSE_FIX_STEPS = [
+    "Custom Search API 已启用但项目仍被 Google 拒绝访问",
+    "可等待 10–30 分钟后重试",
+    "可换新 Google Cloud Project / 新 Key 测试",
+    "当前主 SERP_PROVIDER 使用 Serper",
+]
+GOOGLE_CSE_FIX = "\n".join(GOOGLE_CSE_FIX_STEPS)
+GOOGLE_CSE_SETUP = "请配置 GOOGLE_CSE_ENABLED=true, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX"
+GOOGLE_CSE_BLOCKED = "Google CSE blocked_entitlement。这是项目访问资格，不是系统错误。SERP 继续使用 Serper。"
+GOOGLE_CSE_STEPS = [
+    "Google Cloud → API 和服务 → 库 → 搜索 Custom Search API",
+    "启用 Custom Search API",
+    "API 和服务 → 凭据 → 创建 API 密钥",
+    "API 限制选择 Custom Search API",
+    "Programmable Search Engine 复制搜索引擎 ID",
+    "写入 .env 的 GOOGLE_CSE_API_KEY 和 GOOGLE_CSE_CX",
+    "重启容器",
+    "点击 Test Google CSE",
+]
+_CX_URL = re.compile(r"(?i)(?:https?://)?(?:www\.)?cse\.google\.com/cse(?:\.js)?\?.*?[?&]cx=([^&#\s]+)")
+_CX_PARAM = re.compile(r"(?i)(?:^|[?&])cx=([^&#\s]+)")
+_SERP_PROVIDERS = {"serper", "google_cse", "manual_csv"}
+_TEST_FIELDS = ("provider", "status", "http_status", "items_count", "message", "google_reason", "fix_hint", "fix_steps", "cx_warning", "tested_at")
 _log = logging.getLogger("app.google_search")
 
 
@@ -77,10 +100,289 @@ class GoogleSearchError(Exception):
 
 
 def serp_provider() -> str:
-    return os.getenv("SERP_PROVIDER", "manual_csv").strip().lower() or "manual_csv"
+    override = _serp_override()
+    if override in _SERP_PROVIDERS:
+        return override
+    value = os.getenv("SERP_PROVIDER", "manual_csv").strip().lower() or "manual_csv"
+    return value if value in _SERP_PROVIDERS else "manual_csv"
 
 
-_last_google_health: dict | None = None
+def resolve_cx(raw: str) -> tuple[str, str]:
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+    lowered = text.lower()
+    if "cse.google.com" in lowered or lowered.startswith("http://") or lowered.startswith("https://"):
+        match = _CX_URL.search(text) or _CX_PARAM.search(text)
+        if match:
+            return match.group(1).strip(), "GOOGLE_CSE_CX 填写了完整 URL，已自动截取搜索引擎 ID。"
+    return text, ""
+
+
+def google_cse_card() -> dict:
+    enabled = _enabled()
+    key_present = _env_set("GOOGLE_CSE_API_KEY")
+    cx_raw = os.getenv("GOOGLE_CSE_CX", "").strip()
+    cx, warning = resolve_cx(cx_raw)
+    cx_present = bool(cx)
+    configured = enabled and key_present and cx_present
+    last = _stored_test()
+    last_status = str(last.get("status") or "")
+    entitlement = last_status in {"blocked", "blocked_entitlement"} and _project_block_text(
+        f"{last.get('google_reason') or ''} {last.get('message') or ''} {last_status}"
+    )
+    if entitlement:
+        api_status = "blocked_entitlement"
+        last_status = "blocked_entitlement"
+    elif not configured:
+        api_status = "unchecked"
+    elif last_status in {"ready", "blocked", "error"}:
+        api_status = last_status
+    else:
+        api_status = "unchecked"
+    reason = GOOGLE_CSE_REASON if entitlement else ""
+    fix_steps = list(GOOGLE_CSE_FIX_STEPS) if entitlement else []
+    if entitlement:
+        fix_hint = GOOGLE_CSE_FIX
+        last_message = reason
+    elif api_status == "blocked":
+        fix_hint = str(last.get("fix_hint") or "")
+        last_message = str(last.get("google_reason") or last.get("message") or GOOGLE_CSE_BLOCKED)
+    elif not configured:
+        fix_hint = GOOGLE_CSE_SETUP
+        last_message = str(last.get("message") or "")
+    else:
+        fix_hint = ""
+        last_message = str(last.get("message") or last.get("google_reason") or "")
+    return {
+        "provider": "google_cse",
+        "enabled": enabled,
+        "configured": configured,
+        "api_key": "present" if key_present else "missing",
+        "cx": "present" if cx_present else "missing",
+        "cx_warning": warning,
+        "api_status": api_status,
+        "last_test_status": last_status,
+        "last_test_message": last_message,
+        "last_test_at": str(last.get("tested_at") or ""),
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "fix_steps": fix_steps,
+        "steps": list(GOOGLE_CSE_STEPS),
+    }
+
+
+def google_cse_blocked() -> bool:
+    card = google_cse_card()
+    return card["api_status"] in {"blocked", "blocked_entitlement"} or card["last_test_status"] in {"blocked", "blocked_entitlement"}
+
+
+def test_google_cse(query: str, num: int = 3) -> dict:
+    text = (query or "").strip()
+    if not text:
+        return _finish_test({"provider": "google_cse", "status": "error", "message": "query 不能为空"})
+    size = _clamp_num(num)
+    payload: dict = {"provider": "google_cse", "status": "error", "message": "Google CSE 请求失败"}
+    key, cx, warning, missing = _cse_config()
+    if missing:
+        payload = {
+            "provider": "google_cse",
+            "status": "not_configured",
+            "fix_hint": GOOGLE_CSE_SETUP,
+        }
+        if warning:
+            payload["cx_warning"] = warning
+        return _finish_test(payload)
+    try:
+        _take_quota()
+    except GoogleSearchError as exc:
+        return _finish_test({"provider": "google_cse", "status": "error", "message": exc.message, "cx_warning": warning or None})
+    started = time.perf_counter()
+    status_code: int | None = None
+    try:
+        try:
+            response = httpx.get(
+                GOOGLE_SEARCH_URL,
+                params={"key": key, "cx": cx, "q": text, "num": size},
+                timeout=30,
+            )
+        except httpx.TimeoutException:
+            payload = {"provider": "google_cse", "status": "error", "message": "Google CSE 超时"}
+        except httpx.HTTPError:
+            payload = {"provider": "google_cse", "status": "error", "http_status": 502, "message": "Google CSE 请求失败"}
+        else:
+            status_code = response.status_code
+            if response.status_code == 200:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                items = body.get("items") if isinstance(body, dict) else None
+                count = len(items) if isinstance(items, list) else 0
+                payload = {
+                    "provider": "google_cse",
+                    "status": "ready",
+                    "http_status": 200,
+                    "items_count": count,
+                    "message": "Google CSE ready",
+                }
+            elif response.status_code == 403:
+                payload = _blocked_payload(_google_403_detail(response))
+            else:
+                payload = {
+                    "provider": "google_cse",
+                    "status": "error",
+                    "http_status": response.status_code,
+                    "message": "Google CSE 请求失败",
+                }
+    finally:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        host = urlsplit(GOOGLE_SEARCH_URL).hostname or "www.googleapis.com"
+        known = payload.get("status") in {"blocked", "blocked_entitlement"}
+        _log.info(
+            "Google CSE status=%s http_status=%s elapsed_ms=%s host=%s cx_present=%s",
+            payload.get("status") or "error",
+            status_code if status_code is not None else "none",
+            elapsed_ms,
+            host,
+            "true",
+        )
+        record_trace(
+            "GET",
+            "external_google_search",
+            200 if known else (status_code if status_code is not None else 500),
+            elapsed_ms,
+            "external_google_search",
+            f"status={payload.get('status')} http_status=403 host={host} cx_present=true" if known else f"query={text} num={size} host={host} cx_present=true",
+        )
+    if warning and payload.get("cx_warning") is None:
+        payload["cx_warning"] = warning
+    return _finish_test(payload)
+
+
+def serp_choices() -> dict:
+    serper_ready = _env_flag("SERPER_ENABLED") and _env_set("SERPER_API_KEY")
+    card = google_cse_card()
+    warning = GOOGLE_CSE_BLOCKED if serp_provider() == "google_cse" and google_cse_blocked() else ""
+    return {
+        "provider": serp_provider(),
+        "warning": warning,
+        "options": [
+            {
+                "id": "serper",
+                "available": serper_ready,
+                "reason": "Serper 已配置" if serper_ready else "需要 SERPER_ENABLED=true 和 SERPER_API_KEY",
+            },
+            {
+                "id": "google_cse",
+                "available": bool(card["configured"]),
+                "reason": "Google CSE 已配置" if card["configured"] else GOOGLE_CSE_SETUP,
+            },
+            {"id": "manual_csv", "available": True, "reason": "始终可用，用 CSV 导入搜索结果"},
+        ],
+    }
+
+
+def set_serp_provider(name: str) -> dict:
+    provider = (name or "").strip().lower()
+    if provider not in _SERP_PROVIDERS:
+        raise ValueError("SERP_PROVIDER 只能是 serper、google_cse 或 manual_csv")
+    choices = serp_choices()
+    option = next(item for item in choices["options"] if item["id"] == provider)
+    if not option["available"]:
+        raise ValueError(option["reason"])
+    _write_setting("serp_provider", provider)
+    global _serp_cached, _serp_loaded
+    _serp_cached = provider
+    _serp_loaded = True
+    return serp_choices()
+
+
+_serp_cached = ""
+_serp_loaded = False
+
+
+def _serp_override() -> str:
+    global _serp_cached, _serp_loaded
+    if not _serp_loaded:
+        _serp_cached = _setting("serp_provider")
+        _serp_loaded = True
+    return _serp_cached
+
+
+def _cse_config() -> tuple[str, str, str, bool]:
+    enabled = _enabled()
+    key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    cx, warning = resolve_cx(os.getenv("GOOGLE_CSE_CX", ""))
+    missing = not enabled or not key or not cx
+    return key, cx, warning, missing
+
+
+def _stored_test() -> dict:
+    raw = _setting("google_cse_last_test")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean = {}
+    for key in _TEST_FIELDS:
+        if key not in data or data[key] is None:
+            continue
+        value = data[key]
+        if isinstance(value, str):
+            value = _safe_upstream_text(value)
+        clean[key] = value
+    return clean
+
+
+def _finish_test(payload: dict) -> dict:
+    clean = {"provider": "google_cse"}
+    for key in _TEST_FIELDS:
+        if key not in payload or payload[key] is None or payload[key] == "":
+            continue
+        value = payload[key]
+        if isinstance(value, str):
+            value = _safe_upstream_text(value)
+        clean[key] = value
+    stored = dict(clean)
+    stored["tested_at"] = datetime.now(timezone.utc).isoformat()
+    _write_setting("google_cse_last_test", json.dumps(stored, ensure_ascii=False))
+    return clean
+
+
+def _setting(key: str) -> str:
+    try:
+        conn = connect()
+    except Exception:
+        return ""
+    try:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    except Exception:
+        return ""
+    finally:
+        conn.close()
+    if row is None or row["value"] is None:
+        return ""
+    return str(row["value"])
+
+
+def _write_setting(key: str, value: str) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _env_flag(name: str) -> bool:
@@ -92,29 +394,35 @@ def _env_set(name: str) -> bool:
 
 
 def _google_provider_row() -> dict:
-    enabled = _enabled()
-    configured = _env_set("GOOGLE_CSE_API_KEY") and _env_set("GOOGLE_CSE_CX")
-    if enabled and configured and _last_google_health:
-        row = dict(_last_google_health)
-        row["enabled"] = True
-        row["configured"] = True
-        return row
-    if not enabled or not configured:
-        return {
-            "name": "Google CSE",
-            "type": "serp",
-            "enabled": enabled,
-            "configured": configured,
-            "status": "not_configured",
-            "message": "Set GOOGLE_CSE_ENABLED=true, GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX",
-        }
+    card = google_cse_card()
+    status = "not_configured" if not card["configured"] else card["api_status"]
+    if not card["configured"]:
+        message = GOOGLE_CSE_SETUP
+    elif card["api_status"] == "unchecked":
+        message = "尚未检测。点击 Test Google CSE 后才会请求 Google。"
+    elif card["api_status"] in {"blocked", "blocked_entitlement"}:
+        message = card["reason"] or card["last_test_message"] or GOOGLE_CSE_BLOCKED
+    elif card["api_status"] == "ready":
+        message = card["last_test_message"] or "Google CSE ready"
+    else:
+        message = card["last_test_message"] or "Google CSE 请求失败"
+    details = [
+        f"GOOGLE_CSE_ENABLED={str(card['enabled']).lower()}",
+        f"GOOGLE_CSE_API_KEY={card['api_key']}",
+        f"GOOGLE_CSE_CX={card['cx']}",
+        f"last_test_status={card['last_test_status'] or 'none'}",
+        f"last_test_at={card['last_test_at'] or 'none'}",
+    ]
+    if card["cx_warning"]:
+        details.append(card["cx_warning"])
     return {
         "name": "Google CSE",
         "type": "serp",
-        "enabled": True,
-        "configured": True,
-        "status": "unchecked",
-        "message": "尚未检测。点击检测后才会请求 Google。",
+        "enabled": card["enabled"],
+        "configured": card["configured"],
+        "status": status,
+        "message": message,
+        "details": details,
     }
 
 
@@ -247,73 +555,7 @@ def _planned_dataforseo_row() -> dict:
 
 
 def check_google_cse() -> dict:
-    global _last_google_health
-    enabled = _enabled()
-    key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
-    cx = os.getenv("GOOGLE_CSE_CX", "").strip()
-    if not enabled or not key or not cx:
-        _last_google_health = None
-        return _google_provider_row()
-    started = time.perf_counter()
-    status_code: int | str | None = None
-    row = {
-        "name": "Google CSE",
-        "type": "serp",
-        "enabled": True,
-        "configured": True,
-        "status": "blocked",
-        "message": "Google Search 请求失败",
-        "action": "Use manual_csv or configure Serper/DataForSEO/SerpAPI",
-    }
-    try:
-        try:
-            response = httpx.get(
-                GOOGLE_SEARCH_URL,
-                params={"key": key, "cx": cx, "q": "healthcheck", "num": 1},
-                timeout=30,
-            )
-        except httpx.TimeoutException:
-            status_code = "timeout"
-            row["message"] = "Google Search 超时"
-            row["last_status_code"] = None
-        except httpx.HTTPError:
-            status_code = 502
-            row["last_status_code"] = 502
-        else:
-            status_code = response.status_code
-            row["last_status_code"] = response.status_code
-            if response.status_code == 200:
-                row["status"] = "ready"
-                row["message"] = "Google CSE responded"
-                row.pop("action", None)
-            elif response.status_code == 403:
-                detail = _google_403_detail(response)
-                row["status"] = "blocked"
-                row["message"] = str(detail["google_message"])
-            else:
-                row["status"] = "blocked"
-    finally:
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        host = urlsplit(GOOGLE_SEARCH_URL).hostname or "www.googleapis.com"
-        _log.info(
-            "Google Search query=%s num=%s status_code=%s elapsed_ms=%s host=%s cx_present=%s",
-            "healthcheck",
-            1,
-            status_code if status_code is not None else 500,
-            elapsed_ms,
-            host,
-            "true",
-        )
-        record_trace(
-            "GET",
-            "external_google_search",
-            status_code if status_code is not None else 500,
-            elapsed_ms,
-            "external_google_search",
-            f"query=healthcheck num=1 host={host} cx_present=true",
-        )
-    _last_google_health = row
-    return row
+    return _google_provider_row()
 
 
 def _require_google_provider() -> None:
@@ -350,8 +592,35 @@ def _google_403_detail(response: httpx.Response) -> dict:
         "status_code": 403,
         "google_status": status_name or "PERMISSION_DENIED",
         "google_message": message or "This project does not have the access to Custom Search JSON API.",
-        "suggestion": GOOGLE_403_SUGGESTION,
+        "suggestion": GOOGLE_CSE_FIX,
     }
+
+
+def _project_block_text(text: str) -> bool:
+    lowered = (text or "").lower()
+    return (
+        "custom search json api" in lowered
+        or "does not have the access" in lowered
+        or "does not have access" in lowered
+        or "permission_denied" in lowered
+    )
+
+
+def _blocked_payload(detail: dict) -> dict:
+    blob = f"{detail.get('google_status') or ''} {detail.get('google_message') or ''}"
+    project = _project_block_text(blob) or not blob.strip()
+    reason = GOOGLE_CSE_REASON if project else _safe_upstream_text(detail.get("google_message") or GOOGLE_CSE_BLOCKED)
+    payload = {
+        "provider": "google_cse",
+        "status": "blocked_entitlement" if project else "blocked",
+        "http_status": 403,
+        "google_reason": reason,
+        "message": reason,
+        "fix_hint": GOOGLE_CSE_FIX if project else "",
+    }
+    if project:
+        payload["fix_steps"] = list(GOOGLE_CSE_FIX_STEPS)
+    return payload
 
 
 def _enabled() -> bool:
@@ -367,17 +636,9 @@ def _daily_limit() -> int:
 
 
 def _require_config() -> tuple[str, str]:
-    if not _enabled():
-        raise GoogleSearchError("Google Search 未启用。请在 .env 设置 GOOGLE_CSE_ENABLED=true")
-    key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
-    cx = os.getenv("GOOGLE_CSE_CX", "").strip()
-    missing = []
-    if not key:
-        missing.append("GOOGLE_CSE_API_KEY")
-    if not cx:
-        missing.append("GOOGLE_CSE_CX")
+    key, cx, _warning, missing = _cse_config()
     if missing:
-        raise GoogleSearchError("未配置 " + "、".join(missing))
+        raise GoogleSearchError(GOOGLE_CSE_SETUP)
     return key, cx
 
 
@@ -471,7 +732,8 @@ def search_google(query: str, num: int = 10) -> list[dict]:
         status = response.status_code
         if response.status_code == 403:
             detail = _google_403_detail(response)
-            raise GoogleSearchError(str(detail["google_message"]), 403, detail=detail) from None
+            _finish_test(_blocked_payload(detail))
+            raise GoogleSearchError(GOOGLE_CSE_BLOCKED, 400) from None
         if response.status_code != 200:
             raise GoogleSearchError("Google Search 请求失败", 502) from None
         try:
@@ -487,10 +749,10 @@ def search_google(query: str, num: int = 10) -> list[dict]:
         status_code = status if status is not None else 500
         host = urlsplit(GOOGLE_SEARCH_URL).hostname or "www.googleapis.com"
         cx_present = "true" if cx else "false"
+        known = status_code == 403
         _log.info(
-            "Google Search query=%s num=%s status_code=%s elapsed_ms=%s host=%s cx_present=%s",
-            text,
-            size,
+            "Google Search status=%s http_status=%s elapsed_ms=%s host=%s cx_present=%s",
+            "blocked_entitlement" if known else status_code,
             status_code,
             elapsed_ms,
             host,
@@ -499,10 +761,10 @@ def search_google(query: str, num: int = 10) -> list[dict]:
         record_trace(
             "GET",
             "external_google_search",
-            status_code,
+            200 if known else status_code,
             elapsed_ms,
             "external_google_search",
-            f"query={text} num={size} host={host} cx_present={cx_present}",
+            f"status=blocked_entitlement http_status=403 host={host} cx_present={cx_present}" if known else f"query={text} num={size} host={host} cx_present={cx_present}",
         )
 
 

@@ -462,6 +462,10 @@ def _blank_domain() -> dict:
         "competitor": False,
         "news": False,
         "product_hunt": False,
+        "trend": False,
+        "validation": False,
+        "manual": False,
+        "crawl": False,
         "sitedata": set(),
         "sitedata_top": False,
         "latest": "",
@@ -485,15 +489,25 @@ def _keep_month(bucket: dict, month: str) -> None:
 def _opportunity_tier(score: int, payment: bool, traffic: bool, authority: bool, noise: bool) -> tuple[str, str]:
     if noise:
         return "P3_noise", "样例、演示或本地域名，不进入首页机会榜"
-    pair = (payment and traffic) or (payment and authority) or (traffic and authority)
-    if score >= 85 and pair:
+    ready = sum(1 for present in (payment, traffic, authority) if present)
+    if score >= 85 and ready >= 2:
         return "P0_priority", "分数达到 85，且支付、流量、权重里至少两类同时存在"
-    if score >= 70 or payment or (traffic and authority):
-        return "P1_research", "达到研究线，或已有支付信号，或流量与权重同时存在"
-    single = sum(1 for present in (payment, traffic, authority) if present) == 1
-    if score >= 50 or single:
-        return "P2_watch", "分数达到 50，或只有单一强信号"
-    return "P3_noise", "分数低或关键信息缺失"
+    if score >= 70:
+        return "P1_research", "70–84，进入优先研究"
+    if score >= 50:
+        return "P2_watch", "50–69，先观察"
+    return "P3_noise", "低于 50。按规则先不立案，补页面验证后再看"
+
+
+def _decision(score: int, payment: bool, traffic: bool, authority: bool, validation: bool) -> str:
+    ready = sum(1 for present in (payment, traffic, authority) if present)
+    if score >= 85 and ready >= 2:
+        return "Build Candidate"
+    if score >= 70:
+        return "Validation Needed" if not validation else "Research"
+    if score >= 50:
+        return "Watch"
+    return "Reject"
 
 
 def _next_action(action: str, missing: list[str]) -> str:
@@ -544,7 +558,10 @@ def external_opportunities(
                    json_extract(raw_json, '$.provider') AS provider
             FROM raw_source_records
             WHERE lower(COALESCE(status, '')) IN ('imported', 'confirmed')
-              AND record_type IN ('payment_signal', 'traffic_signal', 'authority_signal', 'serp_result')
+              AND record_type IN (
+                    'payment_signal', 'traffic_signal', 'authority_signal', 'serp_result',
+                    'trend_signal', 'validation_signal', 'crawl_signal', 'external_news'
+                  )
             """
         ).fetchall()
         pages = conn.execute(
@@ -604,6 +621,14 @@ def external_opportunities(
             if keyword and (bucket["serp_rank"] is None or (rank is not None and rank < bucket["serp_rank"])):
                 bucket["serp_rank"] = rank if rank is not None else bucket["serp_rank"]
                 bucket["serp_keyword"] = keyword
+        elif kind == "trend_signal":
+            bucket["trend"] = True
+        elif kind == "validation_signal":
+            bucket["validation"] = True
+        elif kind == "crawl_signal":
+            bucket["crawl"] = True
+        elif kind == "external_news":
+            bucket["manual"] = True
     for page in pages:
         host = _host(page["domain"] or "")
         if not host or _sample_host(host):
@@ -635,6 +660,10 @@ def external_opportunities(
         competitor = bucket["competitor"]
         news = bucket["news"]
         product_hunt = bucket["product_hunt"]
+        trend = bucket["trend"]
+        validation = bucket["validation"]
+        manual = bucket["manual"] or news or product_hunt
+        crawl = bucket["crawl"]
         flags = {
             "payment": payment,
             "traffic": traffic,
@@ -643,35 +672,42 @@ def external_opportunities(
             "competitor": competitor,
             "news": news,
             "product_hunt": product_hunt,
+            "trend": trend,
+            "validation": validation,
         }
         if wanted and not flags.get(wanted):
             continue
         score = 0
-        if news:
-            score += 10
-        if product_hunt:
+        if trend:
             score += 15
-        if payment:
-            score += 30
+        if serp:
+            score += 15
         if traffic:
             score += 20
         if authority:
             score += 15
-        if serp:
-            score += 15
+        if payment:
+            score += 25
         if competitor:
             score += 10
-        evidence_count = sum(1 for present in flags.values() if present)
-        if evidence_count >= 3:
+        if validation:
             score += 20
+        if manual:
+            score += 5
+        notes = []
+        noise = _desk_noise(host)
+        if noise:
+            score -= 30
+            notes.append("样例或演示域名 -30")
+        if not payment and not traffic:
+            score -= 20
+            notes.append("没有商业信号 -20")
+        if not validation and not crawl:
+            score -= 15
+            notes.append("没有页面验证 -15")
+        score = max(0, min(score, 100))
+        evidence_count = sum(1 for name in ("payment", "traffic", "authority", "serp", "competitor", "trend", "validation") if flags.get(name))
         sitedata = bucket["sitedata"]
-        if bucket["sitedata_top"]:
-            score += 10
-        if len(sitedata) >= 3:
-            score += 25
-        elif len(sitedata) >= 2:
-            score += 15
-        score = min(score, 100)
         if floor is not None and score < floor:
             continue
         if sitedata:
@@ -719,7 +755,13 @@ def external_opportunities(
             tags.append("SERP")
         if competitor:
             tags.append("Competitor")
+        if trend:
+            tags.append("Trend")
+        if validation:
+            tags.append("Validation")
         missing = []
+        if not trend:
+            missing.append("Trend")
         if not payment:
             missing.append("Payment")
         if not traffic:
@@ -730,9 +772,14 @@ def external_opportunities(
             missing.append("SERP")
         if not competitor:
             missing.append("Competitor")
-        missing.append("Validation")
-        noise = _desk_noise(host)
+        if not validation:
+            missing.append("Validation")
         tier, reason = _opportunity_tier(score, payment, traffic, authority, noise)
+        decision = _decision(score, payment, traffic, authority, validation)
+        if validation:
+            build_block = "验证证据已齐，可以讨论正式 Build。"
+        else:
+            build_block = "Validation 缺失，不能正式 Build。当前只能是 Build Candidate 或 Evidence Partial。"
         latest_signal = ""
         if bucket["payment_label"]:
             latest_signal = f"payment {bucket['payment_label']}"
@@ -764,12 +811,15 @@ def external_opportunities(
                 "missing_evidence": missing,
                 "next_action": _next_action(action, missing),
                 "reason": reason,
+                "decision": decision,
+                "build_block": build_block,
+                "score_notes": notes,
                 "latest_signal": latest_signal,
                 "_pay": bucket["payment_best"] or 0,
             }
         )
     if home:
-        items = [item for item in items if item["opportunity_tier"] != "P3_noise" and not _desk_noise(item["domain"])]
+        items = [item for item in items if not _desk_noise(item["domain"])]
     items.sort(
         key=lambda item: (
             _TIER_ORDER.get(item["opportunity_tier"], 9),

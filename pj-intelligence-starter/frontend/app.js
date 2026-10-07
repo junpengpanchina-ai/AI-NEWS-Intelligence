@@ -34,6 +34,11 @@ let dashboardSiteOpps = { items: [] };
 let sitedataSettings = { auto_create_dossier: false };
 let sitedataConnector = null;
 let dashboardRanks = { payment: [], traffic: [], authority: [] };
+let dashboardTrends = { items: [], total: 0 };
+let intakeLane = "";
+let marketPulse = null;
+let googleCseCard = null;
+let serpChoice = null;
 let collectStatus = { finished_at: "", sources_checked: 0, new_items: 0, error_count: 0, top_signal: "" };
 let explorerQuery = { dataset_type: "", record_type: "", provider: "", batch_id: "", period_month: "", domain: "", keyword: "", source_name: "", offset: 0 };
 let explorerPage = { total: 0, limit: 50, offset: 0, items: [] };
@@ -944,6 +949,10 @@ function searchDemandStatus() {
   return statusFromBucket(evidenceBucket("keyword_signal"), (bucket) => Number(bucket.keyword_count) >= 20);
 }
 
+function trendStatus() {
+  return statusFromBucket(evidenceBucket("trend_signal"), () => false);
+}
+
 function serpStatus() {
   return statusFromBucket(evidenceBucket("serp_result"), (bucket) => Number(bucket.best_keyword_count) >= 10);
 }
@@ -1005,13 +1014,13 @@ function validationStatus() {
 
 function evidenceSlots() {
   return [
-    ["Demand Signal", searchDemandStatus()],
+    ["Trend Signal", trendStatus()],
     ["SERP Signal", serpStatus()],
     ["Competitor Signal", competitorSlotStatus(competitors)],
-    ["Crawl Signal", crawlStatus()],
     ["Traffic Signal", trafficStatus()],
     ["Authority Signal", authorityStatus()],
     ["Payment Signal", paymentStatus()],
+    ["Crawl Signal", crawlStatus()],
     ["Validation Signal", validationStatus()],
   ];
 }
@@ -1064,6 +1073,7 @@ function evidenceSummary(slotName) {
   }
   const recordType = {
     "Demand Signal": "keyword_signal",
+    "Trend Signal": "trend_signal",
     "SERP Signal": "serp_result",
     "Crawl Signal": "crawl_signal",
     "Traffic Signal": "traffic_signal",
@@ -1075,6 +1085,7 @@ function evidenceSummary(slotName) {
   const dataset = bucket.dataset_type || "";
   const noun = {
     "Demand Signal": "关键词信号",
+    "Trend Signal": "Google Trends 热词",
     "SERP Signal": "SERP 结果",
     "Crawl Signal": "公开抓取",
     "Traffic Signal": "流量增长记录",
@@ -1147,7 +1158,7 @@ function signalKind(row) {
 }
 
 function visibleOpportunities() {
-  return (dashboardExternal.items || []).filter((row) => !isDeskNoise(row.domain) && row.opportunity_tier !== "P3_noise");
+  return (dashboardExternal.items || []).filter((row) => !isDeskNoise(row.domain));
 }
 
 function evidenceNarrative(name, status) {
@@ -1312,56 +1323,395 @@ function renderBriefFeed() {
   return section;
 }
 
+function percentText(ratio) {
+  const value = Number(ratio);
+  if (!Number.isFinite(value)) return "--";
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
+function readinessCopy(status) {
+  if (status === "research_ready_not_build_ready") return "可以进入研究，还不能正式 Build。";
+  if (status === "build_candidate") return "验证、支付和流量已经同时出现，可以视为 Build 候选。";
+  return "目前主要是流量或权重，先观察，再决定是否研究。";
+}
+
+function topDomainLine(rows) {
+  const names = (rows || []).map((row) => row.metric ? `${row.domain} ${row.metric}` : row.domain).filter(Boolean);
+  return names.length ? `Top: ${names.join(", ")}` : "Top: 还没有足够干净的域名";
+}
+
+function rankNames(rows) {
+  return (rows || []).slice(0, 3).map((row) => row.domain).filter(Boolean).join("、") || "--";
+}
+
+function renderMarketPulse() {
+  const section = el("section", "cockpit-card");
+  section.id = "market-pulse";
+  section.append(el("p", "section-label", "Market Intelligence Briefing"));
+  section.append(el("h2", null, "Market Pulse"));
+  const pulse = marketPulse;
+  if (!pulse) {
+    section.append(el("div", "empty", "大盘参数暂时没有算出来。"));
+    return section;
+  }
+  const volume = pulse.signal_volume || {};
+  const gap = pulse.validation_gap || {};
+  const keywords = (dashboardTrends.items || []).slice(0, 3).map((row) => row.keyword).filter(Boolean);
+  const grid = el("div", "pulse-grid");
+  [
+    ["今日新增", `${volume.today || 0} 条信号`, "只统计本地库，刷新不会去拉外部接口。"],
+    ["近 7 日", `${volume.last_7d || 0} 条信号`, "用来看这周有没有新的异常，不是新闻列表。"],
+    ["Top trend keywords", keywords.join("、") || "尚未导入 Google Trends CSV", "热词只说明需求起来了，还要配 SERP 和付费信号。"],
+    ["Top growth domains", rankNames(dashboardRanks.traffic), "流量突增要核对是不是真实需求，还是刷量。"],
+    ["Top payment domains", rankNames(dashboardRanks.payment), "支付榜说明有人在付钱，不能单独作为 Build 依据。"],
+    ["当前缺口", gap.status === "missing" ? "Validation 全缺" : "验证还不完整", "没有页面验证就不能正式做独立站。下一步先补 SERP 和 pricing。"],
+  ].forEach(([title, line, note]) => {
+    const card = el("article", "evidence-card");
+    card.append(el("h3", null, title));
+    card.append(el("p", null, line));
+    card.append(el("div", "clamp", note));
+    grid.append(card);
+  });
+  section.append(grid);
+  return section;
+}
+
+function renderCategoryHeat(rows) {
+  const block = el("div");
+  block.id = "category-heat";
+  block.append(el("p", "section-label", "Category Heat"));
+  const order = ["AI Agent", "AI Video", "SEO / GEO", "API Tools", "Image Tools", "Productivity", "Education", "Developer Tools"];
+  const byName = Object.fromEntries((rows || []).map((row) => [row.category, row]));
+  block.append(radarChart(order.map((name) => byName[name] || { category: name, heat_score: 0 })));
+  order.forEach((name) => {
+    const row = byName[name] || { heat_score: 0, payment_count: 0, traffic_count: 0, authority_count: 0, top_domain: "" };
+    const line = el("div", "heat-row");
+    line.append(el("b", null, name));
+    const bar = el("div", "heat-bar");
+    const fill = el("span");
+    fill.style.width = `${Math.max(0, Math.min(100, Number(row.heat_score) || 0))}%`;
+    bar.append(fill);
+    line.append(bar);
+    line.append(el("span", "num", String(row.heat_score || 0)));
+    block.append(line);
+    block.append(el("div", "clamp", `支付 ${row.payment_count || 0} · 流量 ${row.traffic_count || 0} · 权重 ${row.authority_count || 0} · ${row.top_domain || "还没有代表域名"}`));
+  });
+  return block;
+}
+
+function radarChart(rows) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 320 320");
+  svg.setAttribute("class", "radar");
+  const cx = 160;
+  const cy = 160;
+  const radius = 108;
+  const steps = rows.length || 1;
+  const point = (index, scale) => {
+    const angle = (-Math.PI / 2) + (Math.PI * 2 * index) / steps;
+    return [cx + Math.cos(angle) * radius * scale, cy + Math.sin(angle) * radius * scale];
+  };
+  [0.35, 0.7, 1].forEach((scale) => {
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    ring.setAttribute("points", rows.map((_, index) => point(index, scale).join(",")).join(" "));
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", "rgba(170,190,160,0.28)");
+    svg.append(ring);
+  });
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+  shape.setAttribute("points", rows.map((row, index) => point(index, Math.max(0.08, (Number(row.heat_score) || 0) / 100)).join(",")).join(" "));
+  shape.setAttribute("fill", "rgba(166,227,141,0.28)");
+  shape.setAttribute("stroke", "#A6E38D");
+  svg.append(shape);
+  rows.forEach((row, index) => {
+    const [x, y] = point(index, 1.18);
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(x));
+    label.setAttribute("y", String(y));
+    label.setAttribute("fill", "#8E9B91");
+    label.setAttribute("font-size", "11");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = row.category;
+    svg.append(label);
+  });
+  return svg;
+}
+
+function deskStatus(row) {
+  const raw = String(row?.opportunity_status || "watch").toLowerCase();
+  if (raw === "rejected") return "rejected";
+  const tags = row?.evidence_tags || [];
+  const hasValidation = tags.includes("Validation") || Number(row?.validation_score) > 0;
+  const hasPayment = tags.includes("Payment") || Number(row?.payment_score) > 0;
+  const hasTraffic = tags.includes("Traffic") || Number(row?.traffic_score) > 0;
+  if (hasValidation && hasPayment && hasTraffic) return "build_candidate";
+  if (!hasValidation && (raw.includes("research") || Number(row?.evidence_score) >= 70)) return "validation_needed";
+  if (raw.includes("research")) return "research";
+  return "watch";
+}
+
+function decisionBoundary(row) {
+  if (deskStatus(row) === "rejected") return "这条线已拒绝，不再进入研究。";
+  if (deskStatus(row) === "build_candidate") return "验证、支付和流量已经齐了，可以当作 Build 候选。";
+  return "当前只能进入 Research，不能正式 Build。原因：缺少 Validation Evidence。";
+}
+
+function knownDossierId(domain, dossierId) {
+  if (dossierId) return dossierId;
+  const found = (dashboardDossiers.items || []).find((row) => (row.domain || "") === domain);
+  return found ? found.id : null;
+}
+
+function actionButton(label, onClick) {
+  const button = el("button", null, label);
+  button.type = "button";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick(button);
+  });
+  return button;
+}
+
+function signalActions(row) {
+  const actions = el("div", "filter-bar");
+  actions.append(actionButton("Add to Dossier", (button) => runDossierFeedAction(row, "add", button)));
+  actions.append(actionButton("Ignore", (button) => runDossierFeedAction(row, "ignore", button)));
+  actions.append(actionButton("Research Next", (button) => runDossierFeedAction(row, "research", button)));
+  return actions;
+}
+
+function opportunityActions(row) {
+  const known = knownDossierId(row.domain, row.dossier_id);
+  const actions = el("div", "filter-bar");
+  actions.append(actionButton("Open Dossier", (button) => {
+    if (known) openDossier(known);
+    else runDomainDossier(row.domain, "open", button);
+  }));
+  actions.append(actionButton("Create Dossier", (button) => runDomainDossier(row.domain, "create", button)));
+  actions.append(actionButton("Attach Evidence", (button) => runDomainDossier(row.domain, "create", button)));
+  actions.append(actionButton("Research Next", (button) => runDomainDossier(row.domain, "research", button)));
+  return actions;
+}
+
+function tagRow(names, present) {
+  const row = el("div", "tag-row");
+  names.forEach((name) => {
+    const on = present.includes(name);
+    row.append(el("span", on ? "tag-on" : "tag-off", name));
+  });
+  return row;
+}
+
+function renderTopSignals() {
+  const section = el("section", "cockpit-card");
+  section.id = "top-signals";
+  section.append(el("p", "section-label", "Top Intelligence Signals"));
+  const rows = (dashboardFeed.items || []).slice(0, 10);
+  if (!rows.length) {
+    section.append(el("div", "empty", "今天还没有新的情报信号。"));
+    return section;
+  }
+  const grid = el("div", "desk-grid");
+  rows.forEach((row) => {
+    const card = el("article", "intel-card");
+    card.append(el("h3", null, row.title || row.domain || "--"));
+    card.append(el("div", "clamp", `${row.source || row.source_name || "--"} · ${row.domain || "--"} · ${row.related_keyword || row.signal || row.feed_type || "signal"}`));
+    card.append(el("div", "clamp", `信号分 ${row.score ?? row.signal_score ?? "--"}`));
+    card.append(el("p", null, row.why_it_matters || row.why || "这条信号还缺一句判断。"));
+    const tags = Array.isArray(row.evidence_tags) ? row.evidence_tags : String(row.evidence_tags || row.signal || "").split(",").filter(Boolean);
+    card.append(el("div", "clamp", `证据：${tags.join(" · ") || "--"}`));
+    const missing = Array.isArray(row.missing_evidence) ? row.missing_evidence.join(" / ") : (row.missing_evidence || "--");
+    card.append(el("div", "clamp", `缺口：${missing}`));
+    card.append(signalActions(row));
+    grid.append(card);
+  });
+  section.append(grid);
+  return section;
+}
+
+function renderTopOpportunities() {
+  const section = el("section", "cockpit-card");
+  section.id = "top-opportunities";
+  section.append(el("p", "section-label", "Top External Opportunities"));
+  const rows = visibleOpportunities().slice(0, 8);
+  if (!rows.length) {
+    section.append(el("div", "empty", "今天还没有够格进入研究的外部机会。"));
+    return section;
+  }
+  const names = ["Trend", "SERP", "Traffic", "Authority", "Payment", "Competitor", "Validation"];
+  const grid = el("div", "desk-grid");
+  rows.forEach((row) => {
+    const card = el("article", "intel-card");
+    const top = el("div", "slot-row");
+    const title = el("h3", null, row.domain || "--");
+    title.addEventListener("click", () => {
+      const known = knownDossierId(row.domain, row.dossier_id);
+      if (known) openDossier(known);
+      else runDomainDossier(row.domain, "open", title);
+    });
+    top.append(title);
+    top.append(priorityBadge(row.opportunity_tier));
+    card.append(top);
+    card.append(el("div", "clamp", `Score ${row.opportunity_score ?? "--"} · ${row.decision || tierLabel(row.opportunity_tier)}`));
+    card.append(el("p", null, row.build_block || "Validation 缺失，不能正式 Build。"));
+    card.append(el("p", null, `为什么：${row.reason || "按规则分看，还要补证据。"}`));
+    if ((row.score_notes || []).length) card.append(el("div", "clamp", `扣分：${row.score_notes.join("；")}`));
+    const present = names.filter((name) => (row.evidence_tags || row.tags || []).includes(name) || (name === "Crawl" && (row.evidence_tags || []).includes("Crawl")));
+    card.append(tagRow(names, present));
+    const missing = Array.isArray(row.missing_evidence) ? row.missing_evidence.join(" / ") : (row.missing_evidence || "--");
+    card.append(el("div", "clamp", `缺口：${missing}`));
+    card.append(el("div", "clamp", `下一步：${row.next_action || "--"}`));
+    card.append(opportunityActions(row));
+    grid.append(card);
+  });
+  section.append(grid);
+  return section;
+}
+
+function renderDossierQueue() {
+  const section = el("section", "cockpit-card");
+  section.id = "dossier-queue";
+  section.append(el("p", "section-label", "Dossier Queue"));
+  const rows = dashboardDossiers.items || [];
+  if (!rows.length) {
+    section.append(el("div", "empty", "还没有案卷。把一条信号加进案卷后，这里会出现研究队列。"));
+    return section;
+  }
+  rows.forEach((row) => {
+    const line = el("article", "intel-card");
+    const top = el("div", "slot-row");
+    top.append(el("h3", null, row.domain || "--"));
+    top.append(el("span", "prio", deskStatus(row)));
+    line.append(top);
+    line.append(el("div", "clamp", `Score ${row.evidence_score ?? "--"} · 证据 ${row.evidence_count ?? 0} 条 · ${row.priority_level || "--"}`));
+    line.append(el("div", "clamp", `缺口：${(row.missing_evidence || []).slice(0, 3).join("；") || "--"}`));
+    line.append(el("div", "clamp", `下一步：${row.next_action || "--"}`));
+    line.append(el("p", null, decisionBoundary(row)));
+    line.addEventListener("click", () => openDossier(row.id));
+    section.append(line);
+  });
+  return section;
+}
+
+function renderCoverageBoard() {
+  const board = el("div", "evidence-board");
+  evidenceSlots().forEach(([name, status]) => {
+    const summary = evidenceSummary(name);
+    const card = el("article", "evidence-card");
+    card.append(el("h3", null, name));
+    card.append(el("div", statusClass(status), `${status} · ${summary.record_count} 条 · 最近 ${summary.latest_month || "--"}`));
+    card.append(el("div", "clamp", `Top: ${(summary.domains || []).slice(0, 3).join(", ") || "--"}`));
+    card.append(el("div", "clamp", `来源：${summary.source_name || "--"}`));
+    board.append(card);
+  });
+  return board;
+}
+
+function renderNextActions(names) {
+  const section = el("section", "cockpit-card");
+  section.id = "next-actions";
+  section.append(el("p", "section-label", "Next Actions"));
+  const lines = [
+    `优先打开 ${names.slice(0, 3).join("、") || "还没有干净域名"} 的案卷，核对首页、pricing 和付费入口。`,
+    "搜索证据还不完整。需要时再点 Run SERP，默认走 Serper，刷新页面不会自己去查。",
+    "Validation 仍然缺失。现在只能研究，不能正式 Build。",
+    "支付和流量已经够看商业化痕迹，但不能单独作为 Build 依据。",
+  ];
+  lines.forEach((line) => section.append(el("p", null, line)));
+  const known = (dashboardDossiers.items || [])[0];
+  if (known) {
+    section.append(actionButton("打开优先案卷", () => openDossier(known.id)));
+  }
+  return section;
+}
+
+function renderTrendsRadar() {
+  const section = el("section", "cockpit-card");
+  section.id = "trends-radar";
+  section.append(el("p", "section-label", "Google Trends Radar"));
+  const actions = el("div", "filter-bar");
+  actions.append(actionButton("Import Google Trends CSV", () => openIntakeLane("google_trends")));
+  actions.append(actionButton("View Trend Signals", () => {
+    const node = document.getElementById("trends-radar");
+    if (node) node.scrollIntoView({ block: "start" });
+  }));
+  section.append(actions);
+  const rows = dashboardTrends.items || [];
+  if (!rows.length) {
+    section.append(el("div", "empty", "尚未导入 Google Trends CSV"));
+    return section;
+  }
+  const grid = el("div", "desk-grid");
+  rows.slice(0, 8).forEach((row) => {
+    const card = el("article", "intel-card");
+    card.append(el("h3", null, row.keyword || "--"));
+    card.append(el("div", "clamp", `搜索量 ${row.search_volume || "--"} · 开始 ${row.started_at || "--"} · 增长 ${row.growth || "--"}`));
+    card.append(el("div", "clamp", `相关查询：${row.related_queries || "--"}`));
+    card.append(el("div", "clamp", `${row.region || "--"} · ${row.period || "--"}`));
+    const bar = el("div", "filter-bar");
+    bar.append(actionButton("Run SERP", (button) => runTrendSerp(row.keyword, button)));
+    bar.append(actionButton("Create Dossier", (button) => runDomainDossier(row.keyword, "create", button)));
+    bar.append(actionButton("Ignore", (button) => ignoreTrend(row.id, button)));
+    card.append(bar);
+    grid.append(card);
+  });
+  section.append(grid);
+  return section;
+}
+
+async function runTrendSerp(keyword, button) {
+  button.disabled = true;
+  jobEl.textContent = "SERP 查询中";
+  try {
+    const response = await fetch("/api/serp/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: keyword, num: 10, gl: "us", hl: "en" }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "SERP 失败");
+    jobEl.textContent = `${data.provider || "serper"} 返回 ${data.count || 0} 条`;
+  } catch (error) {
+    jobEl.textContent = error.message || "SERP 失败";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function ignoreTrend(id, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/trends/${id}/ignore`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "忽略失败");
+    jobEl.textContent = "已忽略这条热词";
+    dashboardTrends.items = (dashboardTrends.items || []).filter((row) => row.id !== id);
+    if (viewMode === "briefing") renderBriefing();
+  } catch (error) {
+    jobEl.textContent = error.message || "忽略失败";
+    button.disabled = false;
+  }
+}
+
+function openIntakeLane(lane) {
+  intakeLane = lane;
+  setView("intake");
+}
+
 function renderBriefing() {
   const root = document.getElementById("cockpit");
   if (!root) return;
-  const signals = visibleOpportunities().slice(0, 8);
-  const buckets = queueBuckets();
-  const names = signals.slice(0, 3).map((row) => row.domain).filter(Boolean);
-  const validation = validationStatus();
-  const lead = `今日先看 ${signals.length} 条优先线索，队列中 ${buckets.priority.length} 条进入优先研究、${buckets.research.length} 条继续研究、${buckets.watch.length} 条保持观察。当前不能正式 Build，主要缺口是 Validation。建议优先研究 ${names.join("、") || "还没有足够干净的域名"}。`;
   root.replaceChildren();
-  const hero = el("section", "cockpit-card brief-hero");
-  hero.id = "daily-brief";
-  hero.append(el("p", "section-label", "Daily Intelligence Brief"));
-  hero.append(el("p", "brief-lead", lead));
-  const metrics = el("div", "brief-metrics");
-  [
-    ["New signals", String((dashboardFeed.items || []).length)],
-    ["P0 / P1", `${buckets.priority.length} / ${buckets.research.length}`],
-    ["Payment", paymentStatus()],
-    ["Traffic", trafficStatus()],
-    ["Authority", authorityStatus()],
-    ["Validation", validation],
-    ["Last updated", formatCollectTime((dashboardFeed.items || [])[0]?.created_at || collectStatus.finished_at)],
-  ].forEach(([label, value]) => metrics.append(metricNode(label, value, label === "Validation" && validation === "Missing")));
-  hero.append(metrics);
-  hero.append(el("p", "clamp", `外部机会池已聚合 ${Number(dashboardExternal.total) || visibleOpportunities().length} 条记录，首页仅展示 P0 / P1 机会。`));
-  root.append(hero);
-
-  const priority = el("section", "cockpit-card");
-  priority.id = "priority-signals";
-  priority.append(el("p", "section-label", "Priority Signals"));
-  if (!signals.length) priority.append(el("div", "empty", "今天还没有够格进入优先研究的域名。"));
-  signals.forEach((row) => priority.append(renderSignalCard(row)));
-  root.append(priority);
-
-  const queue = el("section", "cockpit-card");
-  queue.id = "opportunity-queue";
-  queue.append(el("p", "section-label", "Opportunity Queue"));
-  const board = el("div", "queue-board");
-  board.append(renderQueueColumn("Priority Research", buckets.priority, "这一档暂无优先域名。"));
-  board.append(renderQueueColumn("Research", buckets.research, "这一档暂无待研究域名。"));
-  board.append(renderQueueColumn("Watch", buckets.watch, "这一档暂无观察域名。"));
-  queue.append(board);
-  root.append(queue);
-
+  root.append(renderMarketPulse());
+  root.append(renderTrendsRadar());
+  root.append(renderTopSignals());
+  root.append(renderTopOpportunities());
+  root.append(renderDossierQueue());
   const evidence = el("section", "cockpit-card");
-  evidence.id = "evidence-board";
-  evidence.append(el("p", "section-label", "Evidence Board"));
-  evidence.append(renderEvidenceBoard());
+  evidence.id = "evidence-coverage";
+  evidence.append(el("p", "section-label", "Evidence Coverage"));
+  evidence.append(renderCoverageBoard());
   root.append(evidence);
-  root.append(renderBriefFeed());
 }
 
 function renderSignals() {
@@ -1434,7 +1784,7 @@ async function loadJsonObject(url) {
 }
 
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes, stats, latest, external, feed, today, ranks, status, dossiers, siteSignals, siteOpps] = await Promise.all([
+  const [oppRes, kwRes, compRes, stats, latest, external, feed, today, ranks, status, dossiers, siteSignals, siteOpps, pulse, trends] = await Promise.all([
     fetch("/api/opportunities"),
     fetch("/api/keywords"),
     fetch("/api/competitors"),
@@ -1448,6 +1798,8 @@ async function loadDashboard() {
     loadJsonObject("/api/dossiers?limit=10"),
     loadJsonObject("/api/sitedata/signals?limit=20"),
     loadJsonObject("/api/sitedata/opportunities?limit=10"),
+    loadJsonObject("/api/market/pulse"),
+    loadJsonObject("/api/trends?limit=8"),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
@@ -1462,6 +1814,8 @@ async function loadDashboard() {
   dashboardSiteSignals = siteSignals && Array.isArray(siteSignals.items) ? siteSignals : { items: [] };
   dashboardSiteOpps = siteOpps && Array.isArray(siteOpps.items) ? siteOpps : { items: [] };
   dashboardRanks = ranks && Array.isArray(ranks.payment) ? ranks : { payment: [], traffic: [], authority: [] };
+  marketPulse = pulse && pulse.signal_volume ? pulse : null;
+  dashboardTrends = trends && Array.isArray(trends.items) ? trends : { items: [], total: 0 };
   collectStatus = status || collectStatus;
   renderCollectStatus();
   dashboardFeeds = { imports: [], serp: [], payment: [], traffic: [], keywords: [], crawl: [], authority: [], validation: [] };
@@ -2292,8 +2646,143 @@ function renderLedger() {
   else renderSourceList();
 }
 
+function secretText(value) {
+  return /sk-|AIza|api_key|bearer |eyJ|access_token/i.test(String(value || ""));
+}
+
+function renderSerpSelect(choice) {
+  const wrap = el("div", "filter-bar");
+  wrap.append(el("span", null, "SERP_PROVIDER"));
+  const select = document.createElement("select");
+  select.id = "serp-provider";
+  (choice?.options || [
+    { id: "serper", available: false },
+    { id: "google_cse", available: false },
+    { id: "manual_csv", available: true },
+  ]).forEach((option) => {
+    const node = document.createElement("option");
+    node.value = option.id;
+    node.textContent = option.available ? option.id : `${option.id}（未就绪）`;
+    node.disabled = !option.available;
+    if (option.id === choice?.provider) node.selected = true;
+    select.append(node);
+  });
+  select.addEventListener("change", () => saveSerpProvider(select));
+  wrap.append(select);
+  if (choice?.warning) wrap.append(el("div", "error", choice.warning));
+  return wrap;
+}
+
+function renderGoogleCseCard(card, choice) {
+  const block = el("section", "cockpit-card");
+  block.id = "google-cse-card";
+  block.append(el("p", "section-label", "Google CSE"));
+  const status = card?.configured ? (card.api_status || "unchecked") : "not_configured";
+  const tone = status === "ready" ? "Ready" : status === "error" ? "Missing" : "Partial";
+  block.append(el("div", statusClass(tone), status));
+  [
+    `GOOGLE_CSE_ENABLED = ${card?.enabled ? "true" : "false"}`,
+    `GOOGLE_CSE_API_KEY = ${card?.api_key || "missing"}`,
+    `GOOGLE_CSE_CX = ${card?.cx || "missing"}`,
+    `API status = ${card?.api_status || "unchecked"}`,
+    `last_test_status = ${card?.last_test_status || "--"}`,
+    `last_test_at = ${card?.last_test_at || "--"}`,
+  ].forEach((line) => block.append(el("div", "clamp", line)));
+  if (card?.reason || card?.last_test_message) block.append(el("p", null, card.reason || card.last_test_message));
+  if (card?.cx_warning) block.append(el("p", null, card.cx_warning));
+  const hints = (card?.fix_steps || []).length ? card.fix_steps : String(card?.fix_hint || "").split("\n").filter(Boolean);
+  if (hints.length) {
+    const list = el("ul", "cse-steps");
+    hints.forEach((step) => list.append(el("li", null, step)));
+    block.append(list);
+  }
+  block.append(renderSerpSelect(choice));
+  const test = el("button", null, "Test Google CSE");
+  test.type = "button";
+  test.id = "google-cse-test";
+  test.addEventListener("click", () => runGoogleCseTest(test));
+  block.append(test);
+  const result = el("div", "clamp", "");
+  result.id = "google-cse-result";
+  block.append(result);
+  const steps = el("ol", "cse-steps");
+  (card?.steps || []).forEach((step) => steps.append(el("li", null, step)));
+  block.append(steps);
+  return block;
+}
+
+async function saveSerpProvider(select) {
+  const name = select.value;
+  jobEl.textContent = "更新 SERP_PROVIDER";
+  try {
+    const response = await fetch("/api/providers/serp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: name }),
+    });
+    const data = await response.json();
+    if (secretText(JSON.stringify(data))) {
+      jobEl.textContent = "更新结果已隐藏";
+      return;
+    }
+    if (!response.ok) {
+      jobEl.textContent = typeof data.detail === "string" ? data.detail : "更新失败";
+      return;
+    }
+    serpChoice = data;
+    jobEl.textContent = data.warning || `SERP_PROVIDER = ${data.provider}`;
+    if (viewMode === "sources") paintSourceDesk();
+    if (viewMode === "intake") loadIntake();
+  } catch (_error) {
+    jobEl.textContent = "更新失败";
+  }
+}
+
+async function runGoogleCseTest(button) {
+  button.disabled = true;
+  const result = document.getElementById("google-cse-result");
+  if (result) result.textContent = "正在测试 Google CSE";
+  jobEl.textContent = "测试 Google CSE";
+  try {
+    const response = await fetch("/api/providers/google-cse/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "OpenAI compatible API", num: 3 }),
+    });
+    const data = await response.json();
+    if (secretText(JSON.stringify(data))) {
+      if (result) result.textContent = "测试结果已隐藏，因为返回里出现了不该显示的密钥字段。";
+      button.disabled = false;
+      return;
+    }
+    const entitlement = data.status === "blocked_entitlement" || data.status === "blocked";
+    const line = entitlement
+      ? `${data.status} · ${data.google_reason || data.message || ""}`
+      : [data.status, data.http_status ? `HTTP ${data.http_status}` : "", data.items_count != null ? `${data.items_count} 条结果` : "", data.message, data.cx_warning].filter(Boolean).join(" · ");
+    if (result) result.textContent = line || "测试结束";
+    jobEl.textContent = entitlement ? "Google CSE blocked_entitlement" : (data.message || data.status || "测试结束");
+    googleCseCard = await loadJsonObject("/api/providers/google-cse");
+    if (viewMode === "sources") paintSourceDesk();
+    if (viewMode === "intake") loadIntake();
+  } catch (_error) {
+    if (result) result.textContent = "测试失败";
+    jobEl.textContent = "测试失败";
+    button.disabled = false;
+  }
+}
+
+function paintSourceDesk() {
+  detailEl.replaceChildren(renderGoogleCseCard(googleCseCard || {}, serpChoice || {}));
+  if (!selectedSourceId) return;
+  const source = dataSources.find((item) => item.id === selectedSourceId);
+  if (source) appendSourceDetail(source);
+}
+
 function renderSourceDetail(source) {
-  detailEl.replaceChildren();
+  paintSourceDesk();
+}
+
+function appendSourceDetail(source) {
   detailEl.append(el("div", "hint", "数据来源"));
   detailEl.append(el("div", "headline", source.name || "--"));
   [
@@ -2411,6 +2900,11 @@ async function loadSources() {
   const importsResponse = await fetch("/api/imports");
   sourceImports = importsResponse.ok ? await importsResponse.json() : [];
   renderLedger();
+  if (viewMode === "sources") {
+    googleCseCard = await loadJsonObject("/api/providers/google-cse");
+    serpChoice = await loadJsonObject("/api/providers/serp");
+    paintSourceDesk();
+  }
 }
 
 function showSourceForm() {
@@ -2771,13 +3265,7 @@ function renderProviderHealth(payload) {
     if (item.action) detailEl.append(el("div", "clamp", item.action));
     if (item.last_status_code != null) detailEl.append(el("div", "clamp", `last_status_code ${item.last_status_code}`));
   });
-  const check = document.createElement("button");
-  check.id = "provider-google-check";
-  check.type = "button";
-  check.textContent = "检测";
-  check.addEventListener("click", () => runGoogleHealthCheck(check));
-  detailEl.append(check);
-  detailEl.append(el("div", "hint", "这些命令只能检查配置，不能解决项目无 Custom Search JSON API 权限。"));
+  detailEl.append(el("div", "hint", "Google CSE 403 是 blocked_entitlement，不是系统错误。只有 Sources 里的 Test Google CSE 会请求 Google。"));
   GCLOUD_CHECKS.forEach((command) => detailEl.append(el("pre", "template-csv", command)));
 }
 
@@ -2910,47 +3398,42 @@ async function loadProviderHealth() {
   }
 }
 
-async function runGoogleHealthCheck(button) {
-  button.disabled = true;
-  jobEl.textContent = "检测 Google CSE";
-  try {
-    const response = await fetch("/api/providers/google-cse/check", { method: "POST" });
-    const data = await response.json();
-    if (!response.ok) {
-      jobEl.textContent = "检测失败";
-      button.disabled = false;
-      return;
-    }
-    const google = (data.providers || []).find((item) => item.name === "Google CSE");
-    jobEl.textContent = google ? `Google CSE ${google.status}` : "检测完成";
-    renderProviderHealth(data);
-  } catch (_error) {
-    jobEl.textContent = "检测失败";
-    button.disabled = false;
-  }
-}
-
+const INTAKE_LANES = [
+  ["google_trends", "Google Trends CSV", "keyword, search_volume, started_at, growth_rate, region, related_queries, trend_url, period"],
+  ["serp_result", "SERP CSV / Serper Result", "query, rank, title, url, domain, snippet, position"],
+  ["traffic_growth_ranking", "Traffic Growth CSV", "domain, traffic, growth_rate, month, category"],
+  ["dr_growth_ranking", "DR Growth CSV", "domain, dr, dr_growth, month, category"],
+  ["payment_ranking", "Payment Ranking CSV", "domain, payment_traffic, rank, month, payment_provider"],
+  ["manual_intelligence", "Manual Intelligence Link", "title, url, domain, source, published_at, note, category"],
+];
 const INTAKE_DATASETS = [
   ["", "未识别"],
-  ["stripe_payment_ranking", "stripe_payment_ranking"],
-  ["dr_growth_ranking", "dr_growth_ranking"],
-  ["traffic_growth_ranking", "traffic_growth_ranking"],
-  ["new_website_ranking", "new_website_ranking"],
+  ["google_trends", "google_trends"],
   ["serp_result", "serp_result"],
+  ["traffic_growth_ranking", "traffic_growth_ranking"],
+  ["dr_growth_ranking", "dr_growth_ranking"],
+  ["payment_ranking", "payment_ranking"],
+  ["stripe_payment_ranking", "stripe_payment_ranking"],
+  ["manual_intelligence", "manual_intelligence"],
+  ["new_website_ranking", "new_website_ranking"],
   ["keyword_signal", "keyword_signal"],
 ];
 const INTAKE_DATASET_META = {
+  google_trends: ["trend_signal", "google_trends"],
+  serp_result: ["serp_result", "serper"],
+  traffic_growth_ranking: ["traffic_signal", "sitedata"],
+  dr_growth_ranking: ["authority_signal", "sitedata"],
+  payment_ranking: ["payment_signal", "manual_csv"],
   stripe_payment_ranking: ["payment_signal", "Stripe"],
-  dr_growth_ranking: ["authority_signal", ""],
-  traffic_growth_ranking: ["traffic_signal", ""],
+  manual_intelligence: ["external_news", "manual"],
   new_website_ranking: ["market_signal", ""],
-  serp_result: ["serp_result", ""],
   keyword_signal: ["keyword_signal", ""],
 };
-const INTAKE_RECORD_TYPES = ["payment_signal", "traffic_signal", "authority_signal", "market_signal", "serp_result", "keyword_signal", "validation_signal", "crawl_signal"];
+const INTAKE_RECORD_TYPES = ["payment_signal", "traffic_signal", "authority_signal", "market_signal", "serp_result", "keyword_signal", "trend_signal", "external_news", "validation_signal", "crawl_signal"];
 let intakePreview = null;
 let intakeFiles = [];
 let intakeSources = [];
+let lastIntakeOverview = null;
 
 function statusBadge(status) {
   return el("b", slotClass(status || "missing"), status || "missing");
@@ -2964,6 +3447,7 @@ async function loadIntake() {
     ]);
     if (!overviewRes.ok) throw new Error("intake");
     const overview = await overviewRes.json();
+    lastIntakeOverview = overview;
     intakeSources = sourceRes.ok ? await sourceRes.json() : [];
     renderIntake(overview);
     await loadBatchList();
@@ -2974,6 +3458,9 @@ async function loadIntake() {
 }
 
 function renderIntake(overview) {
+  serpChoice = overview.serp || serpChoice;
+  const google = (overview.connectors || []).find((item) => item.provider === "google_cse");
+  if (google?.card) googleCseCard = google.card;
   listEl.replaceChildren();
   [
     ["Crawl Jobs", overview.crawl.status],
@@ -3048,6 +3535,9 @@ function renderConnectorBlock(connectors) {
     if (item.fallback) card.append(el("div", "clamp", `fallback = ${item.fallback}`));
     (item.details || []).forEach((line) => card.append(el("div", "clamp", line)));
     if ((item.uses || []).length) card.append(el("div", "clamp", item.uses.join(" · ")));
+    if (item.provider === "google_cse") {
+      card.append(renderGoogleCseCard(item.card || googleCseCard || {}, serpChoice || {}));
+    }
     if (item.provider === "gsc" || item.provider === "ga4") {
       const button = el("button", null, "占位查询");
       button.type = "button";
@@ -3064,7 +3554,22 @@ function renderImportBlock() {
   const head = el("div", "slot-row");
   head.append(el("h2", null, "Batch Imports"));
   block.append(head);
-  block.append(el("p", "clamp", "上传后只生成 preview，不写入证据，也不改变 Dashboard。Confirm Import 后才入库。"));
+  block.append(el("p", "clamp", "先选入口，再上传。流程是 upload → preview → mapping → confirm import。确认前不写入主库。"));
+  const lanes = el("div", "lane-grid");
+  INTAKE_LANES.forEach(([value, label, fields]) => {
+    const card = el("button", intakeLane === value ? "lane on" : "lane", label);
+    card.type = "button";
+    card.append(el("span", null, fields));
+    card.addEventListener("click", () => {
+      intakeLane = value;
+      if (lastIntakeOverview) renderIntake(lastIntakeOverview);
+      const name = document.getElementById("intake-name");
+      if (name) name.value = label;
+    });
+    lanes.append(card);
+  });
+  block.append(lanes);
+  if (intakeLane) block.append(el("div", "clamp", `当前入口：${intakeLane}`));
   const form = el("div", "intake-actions");
   form.append(labeledInput("intake-name", "import_name"));
   form.append(labeledInput("intake-note", "import_note"));
@@ -3228,7 +3733,12 @@ async function previewIntake() {
   body.append("import_note", document.getElementById("intake-note").value.trim());
   const source = document.getElementById("intake-source").value;
   if (source) body.append("source_id", source);
-  body.append("auto_detect", "true");
+  if (intakeLane) {
+    body.append("dataset_type", intakeLane);
+    body.append("auto_detect", "false");
+  } else {
+    body.append("auto_detect", "true");
+  }
   jobEl.textContent = "识别中";
   try {
     const response = await fetch("/api/imports/upload-batch", { method: "POST", body });
@@ -4301,20 +4811,27 @@ function renderDossier(data) {
   if (!root || !data || !data.dossier) return;
   const dossier = data.dossier;
   root.replaceChildren();
-  const glance = el("section", "cockpit-card");
+  const glance = el("section", "cockpit-card dossier-exec");
   glance.id = "dossier-profile";
-  glance.append(el("p", "section-label", "Entity Profile"));
+  glance.append(el("p", "section-label", "Executive Summary"));
   glance.append(el("h2", null, dossier.domain || "--"));
+  glance.append(el("p", "brief-lead", dossier.one_line_judgment || "这条案卷还没有一句判断。"));
   [
     ["Product", dossier.product_name || "--"],
     ["Category", dossier.category || "--"],
-    ["Status", statusLabel(dossier.opportunity_status)],
+    ["Status", deskStatus(dossier)],
     ["Priority", dossier.priority_level || "--"],
     ["Score", String(dossier.evidence_score ?? "--")],
     ["Confidence", dossier.confidence || "--"],
+    ["Evidence", String(dossier.evidence_count ?? 0)],
     ["First seen", formatCollectTime(dossier.created_at)],
     ["Last updated", formatCollectTime(dossier.updated_at)],
   ].forEach(([label, value]) => glance.append(el("div", "clamp", `${label}：${value}`)));
+  const ruled = ruleScore(data.timeline || []);
+  glance.append(el("p", null, `这个机会是 ${dossier.domain || "未命名域名"}，类别 ${dossier.category || "未归类"}。`));
+  glance.append(el("p", null, `为什么值得看：${dossier.one_line_judgment || "已经有信号，但还没完成页面验证。"}`));
+  glance.append(el("p", null, `规则分 ${ruled.score}。${ruled.notes.join("；") || "没有额外扣分。"}`));
+  glance.append(el("p", null, ruled.types.has("gsc") || ruled.types.has("ga4") || ruled.types.has("validation") ? "现在可以讨论正式 Build。" : "现在不能正式 Build。缺 Validation，最多是 Build Candidate / Evidence Partial。"));
   const summary = el("section", "cockpit-card");
   summary.id = "dossier-summary";
   summary.append(el("p", "section-label", "Evidence Summary"));
@@ -4332,16 +4849,16 @@ function renderDossier(data) {
   summary.append(grid);
   const timeline = el("section", "cockpit-card");
   timeline.id = "dossier-timeline";
-  timeline.append(el("p", "section-label", "Evidence Timeline"));
+  timeline.append(el("p", "section-label", "Signal Timeline"));
   if (!(data.timeline || []).length) timeline.append(el("div", "empty", "暂无证据"));
   (data.timeline || []).forEach((item) => {
     const line = el("div", "feed-line");
-    line.append(el("div", "clamp", `${formatCollectTime(item.created_at)} · ${item.evidence_type || "--"}`));
-    line.append(el("div", null, item.title || "--"));
+    line.append(el("div", null, item.title || item.evidence_type || "--"));
     line.append(el("div", "clamp", `来源：${item.source_name || "--"}`));
-    const metric = [item.metric_name, item.metric_value, item.metric_unit].filter(Boolean).join(" ");
-    line.append(el("div", "clamp", `指标：${metric || "--"}`));
-    line.append(el("div", "clamp", `备注：${item.content || "--"}`));
+    line.append(el("div", "clamp", `时间：${formatCollectTime(item.created_at)}`));
+    line.append(el("div", "clamp", `类型：${item.evidence_type || "--"} · 强度：${evidenceStrength(item)}`));
+    line.append(el("div", "clamp", `摘要：${item.content || [item.metric_name, item.metric_value].filter(Boolean).join(" ") || "--"}`));
+    line.append(el("div", "clamp", buildUse(item)));
     if (item.source_url) {
       const link = el("a", null, item.source_url);
       link.href = item.source_url;
@@ -4359,7 +4876,7 @@ function renderDossier(data) {
   });
   const sources = el("section", "cockpit-card");
   sources.id = "dossier-sources";
-  sources.append(el("p", "section-label", "Sources"));
+  sources.append(el("p", "section-label", "Source Panel"));
   if (!(data.sources || []).length) sources.append(el("div", "empty", "暂无来源"));
   (data.sources || []).forEach((item) => {
     sources.append(el("div", "clamp", `${item.source_name || "--"} · ${item.source_type} · trust ${item.trust_level} · ${formatCollectTime(item.captured_at)} · ${item.original_file || item.original_url || "--"}`));
@@ -4376,21 +4893,27 @@ function renderDossier(data) {
   [
     ["Run SERP", "run_serp"],
     ["Crawl Domain", "crawl"],
-    ["Add Competitor Page", "competitor"],
-    ["Add Keyword", "keyword"],
-    ["Mark as Priority Research", "priority"],
-    ["Reject", "reject"],
+    ["Mark Watch", "watch"],
+    ["Mark Research", "research"],
+    ["Mark Validation Needed", "validation_needed"],
+    ["Mark Build Candidate", "build_candidate"],
   ].forEach(([label, action]) => {
     const button = el("button", null, label);
     button.type = "button";
     button.addEventListener("click", () => runDossierAction(dossier.id, action, button));
     bar.append(button);
   });
+  const attachButton = el("button", null, "Attach Evidence");
+  attachButton.type = "button";
+  const importButton = el("button", null, "Import CSV");
+  importButton.type = "button";
+  importButton.addEventListener("click", () => openIntakeLane(""));
   const noteButton = el("button", null, "Add Manual Note");
   noteButton.type = "button";
   const shotButton = el("button", null, "Upload Screenshot");
   shotButton.type = "button";
-  bar.append(noteButton, shotButton);
+  bar.append(attachButton, importButton, noteButton, shotButton);
+  attachButton.addEventListener("click", () => noteButton.click());
   actions.append(bar);
   const noteBox = el("div");
   noteBox.hidden = true;
@@ -4445,22 +4968,109 @@ function renderDossier(data) {
     shotBox.hidden = false;
   });
   actions.append(noteBox, shotBox);
-  const judgment = el("section", "cockpit-card");
-  judgment.id = "dossier-judgment";
-  judgment.append(el("p", "section-label", "One-line Judgment"));
-  judgment.append(el("p", null, dossier.one_line_judgment || "--"));
+  const matrix = renderEvidenceMatrix(data.timeline || []);
+  const ka = renderKaJudgment(dossier, data.timeline || []);
   const boundary = el("section", "cockpit-card");
   boundary.id = "dossier-boundary";
   boundary.append(el("p", "section-label", "Decision Boundary"));
-  boundary.append(el("p", null, data.build_note || "当前只能进入 Research，不能正式 Build。原因：缺少 Validation Evidence。"));
+  boundary.append(el("p", null, data.build_note || decisionBoundary(dossier)));
   const layout = el("div", "dossier-layout");
   layout.id = "dossier-layout";
   const center = el("div", "dossier-center");
-  center.append(timeline, summary, sources);
+  center.append(timeline);
   const right = el("div", "dossier-side");
-  right.append(judgment, missing, actions, boundary);
-  layout.append(glance, center, right);
-  root.append(layout);
+  right.append(ka, sources, summary, missing, actions, boundary);
+  layout.append(center, right);
+  root.append(glance, matrix, layout);
+}
+
+function ruleScore(items) {
+  const types = new Set((items || []).map((item) => String(item.evidence_type || "").toLowerCase()));
+  const has = (...names) => names.some((name) => types.has(name));
+  let score = 0;
+  if (has("trend")) score += 15;
+  if (has("serp")) score += 15;
+  if (has("traffic")) score += 20;
+  if (has("authority")) score += 15;
+  if (has("payment")) score += 25;
+  if (has("competitor_page")) score += 10;
+  if (has("gsc", "ga4", "validation")) score += 20;
+  if (has("manual_note", "chat_note")) score += 5;
+  const notes = [];
+  if (!has("payment") && !has("traffic")) {
+    score -= 20;
+    notes.push("没有商业信号 -20");
+  }
+  if (!has("gsc", "ga4", "validation", "crawl")) {
+    score -= 15;
+    notes.push("没有页面验证 -15");
+  }
+  return { score: Math.max(0, Math.min(100, score)), notes, types };
+}
+
+function renderEvidenceMatrix(items) {
+  const section = el("section", "cockpit-card");
+  section.id = "dossier-matrix";
+  section.append(el("p", "section-label", "Evidence Matrix"));
+  if (!items.length) {
+    section.append(el("div", "empty", "还没有证据行。"));
+    return section;
+  }
+  const table = document.createElement("table");
+  table.className = "matrix";
+  const head = document.createElement("tr");
+  ["evidence_type", "source", "provider", "strength", "month/date", "summary", "can_support_build"].forEach((name) => {
+    const cell = document.createElement("th");
+    cell.textContent = name;
+    head.append(cell);
+  });
+  table.append(head);
+  items.forEach((item) => {
+    const row = document.createElement("tr");
+    const strength = evidenceStrength(item);
+    const support = buildUse(item);
+    [item.evidence_type || "--", item.source_name || "--", item.source_name || "--", strength, formatCollectTime(item.created_at), item.content || "--", support].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.append(cell);
+    });
+    table.append(row);
+  });
+  section.append(table);
+  return section;
+}
+
+function renderKaJudgment(dossier, items) {
+  const section = el("section", "cockpit-card");
+  section.id = "dossier-ka";
+  section.append(el("p", "section-label", "KA Judgment"));
+  const types = new Set(items.map((item) => String(item.evidence_type || "").toLowerCase()));
+  const pay = types.has("payment");
+  const traffic = types.has("traffic");
+  const lines = [
+    `用户是谁：${dossier.category || "还没归类"} 方向的访问者。案卷里还没有用户原话。`,
+    pay ? "付费人是谁：已有支付痕迹，付费人可能是终端用户或小团队，还要打开 pricing 确认。" : "付费人是谁：还不知道谁付钱。",
+    traffic ? "场景是否高频：流量在动，值得假设场景反复出现，还要用页面验证。" : "场景是否高频：没有流量信号，不能判断高频。",
+    pay && traffic ? "是否有强痛点：有人付钱且流量在动，痛点值得做一页验证。" : "是否有强痛点：支付和流量还没同时出现，痛点只是假设。",
+    types.has("crawl") || types.has("validation") ? "是否能落地页面验证：已有页面或验证记录，可以对照独立站结构。" : "是否能落地页面验证：还不能。缺公开页面抓取和 Validation。",
+    "是否能转化为 99 元 / 199 元 / 订阅：现在不能定价。缺价格页和付费验证。",
+  ];
+  lines.forEach((line) => section.append(el("p", null, line)));
+  return section;
+}
+
+function evidenceStrength(item) {
+  const type = String(item.evidence_type || "").toLowerCase();
+  if (["payment", "traffic", "authority", "gsc", "ga4"].includes(type)) return "高";
+  if (["serp", "crawl", "competitor_page", "screenshot", "manual_note"].includes(type)) return "中";
+  return "低";
+}
+
+function buildUse(item) {
+  const type = String(item.evidence_type || "").toLowerCase();
+  if (["gsc", "ga4", "validation"].includes(type)) return "可以进入 Build 判断。";
+  if (["payment", "traffic", "authority", "serp", "crawl", "competitor_page"].includes(type)) return "只能支持研究，不能单独作为 Build 依据。";
+  return "只是线索，不能作为 Build 依据。";
 }
 
 async function openDossier(id) {

@@ -610,6 +610,9 @@ class ExternalOpportunity(BaseModel):
     missing_evidence: list[str] = []
     next_action: str = ""
     reason: str = ""
+    decision: str = ""
+    build_block: str = ""
+    score_notes: list[str] = []
     latest_signal: str = ""
 
 
@@ -911,3 +914,121 @@ class StorageExportFile(BaseModel):
 class StorageExportOut(BaseModel):
     files: list[StorageExportFile] = []
     created_at: str = ""
+
+
+class SignalVolumeOut(BaseModel):
+    today: int = 0
+    last_7d: int = 0
+    last_30d: int = 0
+
+
+class PaymentDensityOut(BaseModel):
+    domains: int = 0
+    ratio: float = 0
+
+
+class PulseDomainOut(BaseModel):
+    domain: str = ""
+    metric: str = ""
+
+
+class MomentumOut(BaseModel):
+    domains: int = 0
+    top_domains: list[PulseDomainOut] = []
+
+
+class SerpCoverageOut(BaseModel):
+    covered_domains: int = 0
+    missing_domains: int = 0
+    status: str = "missing"
+
+
+class CategoryHeatOut(BaseModel):
+    category: str
+    heat_score: int = 0
+    signal_count: int = 0
+    payment_count: int = 0
+    traffic_count: int = 0
+    authority_count: int = 0
+    opportunity_count: int = 0
+    avg_score: float = 0
+    top_domain: str = ""
+
+
+class OpportunityQualityOut(BaseModel):
+    p0: int = 0
+    p1: int = 0
+    p2: int = 0
+    p3: int = 0
+
+
+class ValidationGapOut(BaseModel):
+    missing_ratio: float = 1
+    status: str = "missing"
+
+
+class BuildReadinessOut(BaseModel):
+    status: str = "watch_research"
+    reason: str = ""
+
+
+class MarketPulseOut(BaseModel):
+    signal_volume: SignalVolumeOut = SignalVolumeOut()
+    payment_density: PaymentDensityOut = PaymentDensityOut()
+    traffic_momentum: MomentumOut = MomentumOut()
+    authority_momentum: MomentumOut = MomentumOut()
+    serp_coverage: SerpCoverageOut = SerpCoverageOut()
+    category_heat: list[CategoryHeatOut] = []
+    opportunity_quality: OpportunityQualityOut = OpportunityQualityOut()
+    validation_gap: ValidationGapOut = ValidationGapOut()
+    build_readiness: BuildReadinessOut = BuildReadinessOut()
+
+
+class GoogleCseCardOut(BaseModel):
+    provider: str = "google_cse"
+    enabled: bool = False
+    configured: bool = False
+    api_key: str = "missing"
+    cx: str = "missing"
+    cx_warning: str = ""
+    api_status: str = "unchecked"
+    last_test_status: str = ""
+    last_test_message: str = ""
+    last_test_at: str = ""
+    reason: str = ""
+    fix_hint: str = ""
+    fix_steps: list[str] = []
+    steps: list[str] = []
+
+
+class GoogleCseTestIn(BaseModel):
+    query: str = "OpenAI compatible API"
+    num: int = 3
+
+
+class GoogleCseTestOut(BaseModel):
+    provider: str = "google_cse"
+    status: str
+    http_status: int | None = None
+    items_count: int | None = None
+    message: str | None = None
+    google_reason: str | None = None
+    fix_hint: str | None = None
+    fix_steps: list[str] | None = None
+    cx_warning: str | None = None
+
+
+class SerpOptionOut(BaseModel):
+    id: str
+    available: bool = False
+    reason: str = ""
+
+
+class SerpProviderIn(BaseModel):
+    provider: str
+
+
+class SerpProviderOut(BaseModel):
+    provider: str
+    options: list[SerpOptionOut] = []
+    warning: str = ""

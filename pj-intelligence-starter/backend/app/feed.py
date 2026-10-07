@@ -333,8 +333,28 @@ def sync_local_feed() -> None:
         rows = []
         for record_type in ("payment_signal", "traffic_signal", "authority_signal", "serp_result", "crawl_signal"):
             rows.extend(_local_rows(conn, record_type))
+        trend_rows = conn.execute(
+            """
+            SELECT normalized_keyword, normalized_domain, normalized_url, created_at,
+                   json_extract(raw_json, '$.search_volume') AS search_volume,
+                   json_extract(raw_json, '$.growth_rate') AS growth_rate
+            FROM raw_source_records
+            WHERE record_type = 'trend_signal'
+              AND lower(COALESCE(status, '')) IN ('imported', 'confirmed')
+            ORDER BY id DESC
+            LIMIT 6
+            """
+        ).fetchall()
     finally:
         conn.close()
+    for row in trend_rows:
+        keyword = (row["normalized_keyword"] or "").strip()
+        domain = _host(row["normalized_domain"] or "")
+        if not keyword and not domain:
+            continue
+        title = keyword or domain
+        why = f"{title} 搜索量 {row['search_volume'] or '--'}，增长 {row['growth_rate'] or '--'}。这是需求信号，还不能单独 Build。"
+        _add_feed("trend", title, domain or keyword, row["normalized_url"] or "", "Google Trends", "trend", why, keyword, row["created_at"] or _now())
     labels = {
         "payment_signal": ("payment", "Stripe", "payment"),
         "traffic_signal": ("traffic", "Traffic", "traffic"),

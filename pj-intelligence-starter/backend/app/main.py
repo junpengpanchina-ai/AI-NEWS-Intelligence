@@ -37,9 +37,13 @@ from app.competitors import (
 from app.google_search import (
     GoogleSearchError,
     check_google_cse,
+    google_cse_card,
     import_competitors,
     install_google_log_redaction,
     provider_health,
+    serp_choices,
+    set_serp_provider,
+    test_google_cse,
 )
 from app.serp import search_serp
 from app.inbox import (
@@ -67,6 +71,7 @@ from app.explorer import (
     list_explorer_records,
     list_import_batches,
 )
+from app.market import market_pulse
 from app.feed import (
     apply_feed_action,
     collect_now,
@@ -83,7 +88,9 @@ from app.intake import (
     dataforseo_health,
     ga4_health,
     gsc_health,
+    ignore_trend_signal,
     intake_overview,
+    list_trend_signals,
     run_crawl,
 )
 from app.keywords import (
@@ -190,6 +197,12 @@ from app.schemas import (
     StorageBackupOut,
     StorageExportOut,
     StorageHealthOut,
+    MarketPulseOut,
+    GoogleCseCardOut,
+    GoogleCseTestIn,
+    GoogleCseTestOut,
+    SerpProviderIn,
+    SerpProviderOut,
 )
 from app.dossiers import (
     add_evidence,
@@ -689,6 +702,19 @@ def intake_home():
     return intake_overview()
 
 
+@app.get("/api/trends")
+def trend_signals(limit: int = 10):
+    return list_trend_signals(limit)
+
+
+@app.post("/api/trends/{record_id}/ignore")
+def trend_ignore(record_id: int):
+    try:
+        return ignore_trend_signal(record_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/crawl/jobs")
 def crawl_job(payload: CrawlJobIn):
     try:
@@ -826,6 +852,34 @@ def sitedata_settings_update(payload: SiteDataSettings):
 def providers_google_check():
     check_google_cse()
     return provider_health()
+
+
+@app.get("/api/market/pulse", response_model=MarketPulseOut)
+def market_pulse_view():
+    return market_pulse()
+
+
+@app.get("/api/providers/google-cse", response_model=GoogleCseCardOut)
+def google_cse_view():
+    return google_cse_card()
+
+
+@app.post("/api/providers/google-cse/test", response_model=GoogleCseTestOut, response_model_exclude_none=True)
+def google_cse_test(payload: GoogleCseTestIn):
+    return test_google_cse(payload.query, payload.num)
+
+
+@app.get("/api/providers/serp", response_model=SerpProviderOut)
+def serp_provider_view():
+    return serp_choices()
+
+
+@app.post("/api/providers/serp", response_model=SerpProviderOut)
+def serp_provider_update(payload: SerpProviderIn):
+    try:
+        return set_serp_provider(payload.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/raw-records", response_model=list[RawRecordOut])

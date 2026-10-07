@@ -789,6 +789,46 @@ h2 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.pulse-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.heat-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) 36px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.heat-bar {
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(170, 190, 160, 0.12);
+  overflow: hidden;
+}
+
+.heat-bar span {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.radar {
+  width: min(100%, 320px);
+  height: auto;
+  display: block;
+  margin: 8px auto 12px;
+}
+
+.cse-steps {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--dim);
+}
+
 .intel-card,
 .queue-col,
 .evidence-card {
@@ -799,7 +839,82 @@ h2 {
 }
 
 .intel-card {
-  margin-top: 10px;
+  margin-top: 0;
+}
+
+.desk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.tag-on,
+.tag-off {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.tag-on {
+  color: #08110e;
+  background: var(--green);
+}
+
+.tag-off {
+  color: var(--dim);
+  border: 1px solid var(--line);
+}
+
+.dossier-exec {
+  margin-bottom: 12px;
+}
+
+.lane-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.lane {
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.lane.on {
+  border-color: var(--green);
+}
+
+.lane span {
+  display: block;
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.matrix th,
+.matrix td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
 }
 
 .intel-card h3,
@@ -846,7 +961,7 @@ h2 {
 
 .dossier-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
   gap: 12px;
   align-items: start;
 }
@@ -882,7 +997,10 @@ h2 {
   .metrics,
   .brief-metrics,
   .evidence-board,
-  .queue-board {
+  .queue-board,
+  .pulse-grid,
+  .desk-grid,
+  .lane-grid {
     grid-template-columns: 1fr;
   }
 

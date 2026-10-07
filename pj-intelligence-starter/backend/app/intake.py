@@ -12,7 +12,7 @@ import ipaddress
 import httpx
 
 from app.db import connect
-from app.google_search import provider_health
+from app.google_search import google_cse_card, provider_health, serp_choices
 from app.ledger import create_source, get_source
 from app.trace import record_trace
 
@@ -29,19 +29,25 @@ CRAWL_TYPES = {
 }
 DATASET_TYPES = {
     "stripe_payment_ranking": ("payment_signal", "Stripe"),
-    "dr_growth_ranking": ("authority_signal", ""),
-    "traffic_growth_ranking": ("traffic_signal", ""),
+    "payment_ranking": ("payment_signal", "manual_csv"),
+    "dr_growth_ranking": ("authority_signal", "sitedata"),
+    "traffic_growth_ranking": ("traffic_signal", "sitedata"),
     "new_website_ranking": ("market_signal", ""),
-    "serp_result": ("serp_result", ""),
+    "serp_result": ("serp_result", "serper"),
     "keyword_signal": ("keyword_signal", ""),
+    "google_trends": ("trend_signal", "google_trends"),
+    "manual_intelligence": ("external_news", "manual"),
 }
 _DATASET_SOURCE = {
     "stripe_payment_ranking": ("Stripe Payment Ranking", "payment_ranking", "Stripe"),
-    "dr_growth_ranking": ("DR Growth", "dr_growth", "DR"),
+    "payment_ranking": ("Payment Ranking", "payment_ranking", "manual_csv"),
+    "dr_growth_ranking": ("DR Growth", "dr_growth", "sitedata"),
     "traffic_growth_ranking": ("SiteData Traffic Growth", "site_traffic", "SiteData"),
     "new_website_ranking": ("SiteData New Site Growth", "new_site_growth", "SiteData"),
-    "serp_result": ("Manual Research", "manual", "Manual"),
+    "serp_result": ("Manual Research", "serp", "serper"),
     "keyword_signal": ("Manual Research", "manual", "Manual"),
+    "google_trends": ("Google Trends", "google_trends", "google_trends"),
+    "manual_intelligence": ("Manual Intelligence", "manual", "manual"),
     "public_web_crawl": ("Public Web Crawl", "public_web", "Public Web"),
 }
 _PAYMENT_WORDS = ("stripe", "paddle", "dodo", "lemonsqueezy", "paypal", "checkout", "billing", "subscribe", "pricing")
@@ -60,6 +66,8 @@ _RECORD_TYPES = {
     "keyword_signal",
     "validation_signal",
     "crawl_signal",
+    "trend_signal",
+    "external_news",
 }
 _previews: dict[str, dict] = {}
 
@@ -131,8 +139,39 @@ def detect_dataset(file_name: str, relative_path: str, headers: list[str]) -> di
         confidence = 0.95 if "fastest-growing-websites" in name and "dr" not in name else 0.86
         return pack("traffic_growth_ranking", confidence)
     keys = _header_keys(headers)
-    if {"title", "url", "domain", "snippet", "rank"} <= keys:
-        return pack("serp_result", 0.9)
+    if "keyword" in keys and keys & {"search_volume", "growth_rate", "related_queries", "trend_url", "started_at"}:
+        return pack("google_trends", 0.93)
+    if {"domain", "payment_traffic"} <= keys or "payment_provider" in keys:
+        found = pack("payment_ranking", 0.9)
+        if "dodo" in blob:
+            found["provider"] = "dodo"
+        elif "nexi" in blob:
+            found["provider"] = "nexi"
+        elif "stripe" in blob:
+            found["provider"] = "stripe"
+        return found
+    if {"domain", "dr", "dr_growth"} <= keys:
+        return pack("dr_growth_ranking", 0.9)
+    if {"domain", "traffic"} <= keys and keys & {"growth_rate", "month", "category"}:
+        return pack("traffic_growth_ranking", 0.88)
+    if {"title", "url"} <= keys and "rank" not in keys and keys & {"source", "published_at", "note", "category"}:
+        found = pack("manual_intelligence", 0.9)
+        if "producthunt" in blob or "product_hunt" in blob:
+            found["provider"] = "producthunt"
+        elif "hacker" in blob or "/hn" in blob:
+            found["provider"] = "hn"
+        elif "github" in blob:
+            found["provider"] = "github"
+        elif "rss" in blob:
+            found["provider"] = "rss"
+        return found
+    if {"title", "url", "domain", "snippet", "rank"} <= keys or {"query", "rank", "title", "url"} <= keys:
+        found = pack("serp_result", 0.9)
+        if "google" in blob and "cse" in blob:
+            found["provider"] = "google_cse"
+        elif "manual" in blob:
+            found["provider"] = "manual_csv"
+        return found
     if {"keyword", "score", "intent", "page_type"} <= keys:
         return pack("keyword_signal", 0.9)
     warnings.append("未能识别数据类型")
@@ -321,6 +360,16 @@ def _map_header(dataset: str, header: str, period: str) -> str:
             return "google_ads_advertiser_site_count"
         if "注册日期" in text:
             return "registered_at"
+        if lower in {"domain", "website"}:
+            return "domain"
+        if lower == "dr":
+            return "current_dr"
+        if lower == "dr_growth":
+            return "dr_growth"
+        if lower == "month":
+            return "period"
+        if lower == "category":
+            return "category"
     if dataset == "traffic_growth_ranking":
         if text == "排名":
             return "rank"
@@ -344,6 +393,50 @@ def _map_header(dataset: str, header: str, period: str) -> str:
             return "google_ads_advertiser_site_count"
         if "注册日期" in text:
             return "registered_at"
+        if lower in {"domain", "website"}:
+            return "domain"
+        if lower == "traffic":
+            return "traffic"
+        if lower in {"growth_rate", "growth"}:
+            return "growth_rate"
+        if lower == "month":
+            return "period"
+        if lower == "category":
+            return "category"
+    if dataset == "payment_ranking":
+        return {
+            "domain": "domain",
+            "website": "domain",
+            "payment_traffic": "payment_traffic",
+            "rank": "rank",
+            "month": "period",
+            "payment_provider": "payment_provider",
+            "provider": "payment_provider",
+            "category": "category",
+        }.get(lower.replace(" ", "_"), "")
+    if dataset == "google_trends":
+        return {
+            "keyword": "keyword",
+            "search_volume": "search_volume",
+            "started_at": "started_at",
+            "growth_rate": "growth_rate",
+            "growth": "growth_rate",
+            "region": "region",
+            "related_queries": "related_queries",
+            "trend_url": "trend_url",
+            "period": "period",
+            "month": "period",
+        }.get(lower.replace(" ", "_"), "")
+    if dataset == "manual_intelligence":
+        return {
+            "title": "title",
+            "url": "url",
+            "domain": "domain",
+            "source": "source_name",
+            "published_at": "published_at",
+            "note": "note",
+            "category": "category",
+        }.get(lower.replace(" ", "_"), "")
     if dataset == "new_website_ranking":
         if text in {"排名", "Rank"} or lower == "rank":
             return "rank"
@@ -359,11 +452,13 @@ def _map_header(dataset: str, header: str, period: str) -> str:
             return "registered_at"
     if dataset == "serp_result":
         return {
+            "query": "keyword",
             "title": "title",
             "url": "url",
             "domain": "domain",
             "snippet": "snippet",
             "rank": "rank",
+            "position": "rank",
         }.get(lower.replace(" ", "_"), "")
     if dataset == "keyword_signal":
         return {
@@ -381,15 +476,21 @@ def _map_row(dataset: str, row: dict, meta: dict) -> dict:
         key = _map_header(dataset, header, meta.get("period_month") or "")
         if key and str(value or "").strip() and key not in mapped:
             mapped[key] = str(value).strip()
+    period = mapped.get("period") or meta.get("period_month") or ""
+    if mapped.get("trend_url") and not mapped.get("url"):
+        mapped["url"] = mapped["trend_url"]
+    if mapped.get("url") and not mapped.get("domain"):
+        parsed = urlparse(mapped["url"] if "://" in mapped["url"] else f"https://{mapped['url']}")
+        mapped["domain"] = (parsed.hostname or "").removeprefix("www.")
     mapped.update(
         {
-            "period_month": meta.get("period_month") or "",
+            "period_month": period[:7] if len(period) >= 7 and period[4:5] == "-" else (meta.get("period_month") or ""),
             "previous_month": meta.get("previous_month") or "",
             "original_file_name": meta.get("original_file_name") or "",
             "relative_path": meta.get("relative_path") or "",
             "dataset_type": dataset,
-            "provider": meta.get("provider") or "",
-            "source_note": meta.get("source_note") or "",
+            "provider": mapped.get("payment_provider") or meta.get("provider") or "",
+            "source_note": mapped.get("note") or meta.get("source_note") or "",
         }
     )
     return mapped
@@ -712,7 +813,7 @@ def _insert_import(dataset: str, record_type: str, provider: str, source_id: int
             keyword = row.get("keyword") or ""
             metric_name = ""
             metric_value = ""
-            for key in ("payment_traffic", "monthly_traffic", "current_traffic", "traffic", "current_dr", "score", "rank"):
+            for key in ("payment_traffic", "monthly_traffic", "current_traffic", "traffic", "current_dr", "search_volume", "score", "rank"):
                 if row.get(key):
                     metric_name = key
                     metric_value = row[key]
@@ -746,6 +847,75 @@ def _insert_import(dataset: str, record_type: str, provider: str, source_id: int
     finally:
         conn.close()
     return {"import_id": import_id, "row_count": len(rows), "status": status}
+
+
+def list_trend_signals(limit: int = 10) -> dict:
+    size = max(1, min(int(limit or 10), 50))
+    conn = connect()
+    try:
+        total = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM raw_source_records
+            WHERE record_type = 'trend_signal'
+              AND lower(COALESCE(status, '')) IN ('imported', 'confirmed')
+            """
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT id, normalized_keyword, normalized_domain, normalized_url, time_range, raw_json, created_at
+            FROM raw_source_records
+            WHERE record_type = 'trend_signal'
+              AND lower(COALESCE(status, '')) IN ('imported', 'confirmed')
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (size,),
+        ).fetchall()
+    finally:
+        conn.close()
+    items = []
+    for row in rows:
+        try:
+            raw = json.loads(row["raw_json"] or "{}")
+        except json.JSONDecodeError:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        items.append(
+            {
+                "id": int(row["id"]),
+                "keyword": row["normalized_keyword"] or raw.get("keyword") or "",
+                "search_volume": raw.get("search_volume") or "",
+                "started_at": raw.get("started_at") or "",
+                "growth": raw.get("growth_rate") or "",
+                "related_queries": raw.get("related_queries") or "",
+                "region": raw.get("region") or "",
+                "period": row["time_range"] or raw.get("period_month") or raw.get("period") or "",
+                "trend_url": raw.get("trend_url") or row["normalized_url"] or "",
+                "domain": row["normalized_domain"] or "",
+            }
+        )
+    return {"total": int(total["n"] or 0) if total else 0, "items": items}
+
+
+def ignore_trend_signal(record_id: int) -> dict:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM raw_source_records WHERE id = ? AND record_type = 'trend_signal'",
+            (int(record_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError("热词不存在")
+        conn.execute(
+            "UPDATE raw_source_records SET status = 'ignored' WHERE id = ?",
+            (int(record_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": int(record_id), "status": "ignored"}
 
 
 def _sample_domain(domain: str) -> bool:
@@ -947,8 +1117,6 @@ def intake_overview() -> dict:
     by_name = {item["name"]: item for item in health["providers"]}
     google = by_name.get("Google CSE", {})
     google_status = google.get("status") or "not_configured"
-    if google_status == "unchecked":
-        google_status = "not_configured"
     serper = by_name.get("Serper", {})
     connectors = [
         {
@@ -967,8 +1135,9 @@ def intake_overview() -> dict:
             "configured": bool(google.get("configured")),
             "message": google.get("message") or "",
             "fallback": "serper / manual_csv",
-            "details": [],
-            "uses": ["备用 SERP"],
+            "details": google.get("details") or [],
+            "uses": ["SERP Top 10"],
+            "card": google_cse_card(),
         },
         _connector_from("gsc", "Google Search Console", by_name.get("GSC", {}), ["impressions", "clicks", "ctr", "position"]),
         _connector_from("ga4", "GA4", by_name.get("GA4", {}), ["sessions", "activeUsers", "conversions"]),
@@ -983,6 +1152,7 @@ def intake_overview() -> dict:
         "connectors": connectors,
         "imports": imports,
         "ledger": ledger,
+        "serp": serp_choices(),
     }
 
 
