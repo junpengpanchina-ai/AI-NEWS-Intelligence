@@ -4,12 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PJ Intelligence</title>
-  <link rel="stylesheet" href="/styles.css?v=087">
+  <link rel="stylesheet" href="/styles.css?v=092">
 </head>
-<body data-screen="briefing" data-focus="work">
+<body data-screen="briefing" data-focus="work" data-layout="cockpit">
   <header>
     <div class="brand">PJ Intelligence</div>
-    <div class="badge">情报室</div>
+    <div class="desk-flags" id="desk-flags">
+      <span class="flag">LOCAL</span>
+      <span class="flag ready" id="flag-serp">SERPER READY</span>
+      <span class="flag blocked" id="flag-cse">GOOGLE CSE BLOCKED</span>
+    </div>
     <nav class="switch" id="primary-nav">
       <button id="view-briefing" class="on" type="button">Briefing</button>
       <button id="view-signals" type="button">Signals</button>
@@ -64,6 +68,7 @@
       </section>
     </div>
   </main>
-  <script src="/app.js?v=087"></script>
+  <script src="/config.js?v=092"></script>
+  <script src="/app.js?v=092"></script>
 </body>
 </html>

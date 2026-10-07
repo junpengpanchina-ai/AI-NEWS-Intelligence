@@ -1,9 +1,12 @@
 import logging
+import os
+import re
 import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -230,6 +233,47 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="PJ Intelligence", lifespan=lifespan)
+
+
+def cors_config() -> tuple[list[str], str | None]:
+    app_env = os.getenv("APP_ENV", "development").strip().lower() or "development"
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if raw:
+        items = [part.strip() for part in raw.split(",") if part.strip()]
+    else:
+        items = [
+            "http://localhost:8765",
+            "http://localhost:5173",
+            "http://127.0.0.1:8765",
+            "https://pj-intelligence.tokfai.com",
+            "https://*.vercel.app",
+        ]
+    if app_env == "production":
+        items = [item for item in items if item != "*"]
+    elif "*" in items:
+        return ["*"], None
+    origins: list[str] = []
+    patterns: list[str] = []
+    for item in items:
+        if item == "https://*.vercel.app":
+            patterns.append(r"https://[A-Za-z0-9-]+\.vercel\.app")
+            continue
+        if "*" in item:
+            patterns.append(re.escape(item).replace(r"\*", r"[A-Za-z0-9-]+"))
+            continue
+        origins.append(item)
+    regex = "|".join(f"(?:{part})" for part in patterns) if patterns else None
+    return origins, regex
+
+
+_cors_origins, _cors_regex = cors_config()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_regex,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.middleware("http")

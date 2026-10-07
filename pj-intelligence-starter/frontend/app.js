@@ -36,6 +36,7 @@ let sitedataConnector = null;
 let dashboardRanks = { payment: [], traffic: [], authority: [] };
 let dashboardTrends = { items: [], total: 0 };
 let intakeLane = "";
+let deskQuery = "";
 let marketPulse = null;
 let googleCseCard = null;
 let serpChoice = null;
@@ -285,14 +286,14 @@ async function openItem(id) {
   renderList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/items/${id}`);
+    const response = await fetch(apiPath(`/api/items/${id}`));
     const item = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", item.detail || "加载失败"));
       return;
     }
     let saved = null;
-    const analysisResponse = await fetch(`/api/analysis/${id}`);
+    const analysisResponse = await fetch(apiPath(`/api/analysis/${id}`));
     if (analysisResponse.ok) {
       saved = await analysisResponse.json();
     }
@@ -336,7 +337,7 @@ async function runAnalyze(id) {
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
   startTimer(elapsed);
   try {
-    const response = await fetch(`/api/items/${id}/analyze`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/items/${id}/analyze`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (token !== analyzeToken) return;
     if (!response.ok) {
@@ -467,14 +468,14 @@ async function openEvent(id) {
   renderEventList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/events/${id}`);
+    const response = await fetch(apiPath(`/api/events/${id}`));
     const payload = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", payload.detail || "加载失败"));
       return;
     }
     let saved = null;
-    const analysisResponse = await fetch(`/api/event-analysis/${id}`);
+    const analysisResponse = await fetch(apiPath(`/api/event-analysis/${id}`));
     if (analysisResponse.ok) saved = await analysisResponse.json();
     renderEventDetail(payload.event, payload.items, saved);
   } catch (_error) {
@@ -483,7 +484,7 @@ async function openEvent(id) {
 }
 
 async function loadEvents() {
-  const response = await fetch("/api/events?limit=50");
+  const response = await fetch(apiPath("/api/events?limit=50"));
   if (!response.ok) throw new Error("events");
   events = await response.json();
   renderEventList();
@@ -503,7 +504,7 @@ async function runEventAnalyze(id) {
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
   startTimer(elapsed);
   try {
-    const response = await fetch(`/api/events/${id}/analyze`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/events/${id}/analyze`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (token !== analyzeToken) return;
     if (!response.ok) {
@@ -649,14 +650,14 @@ async function openKeyword(id) {
   renderKeywordList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/keywords/${id}`);
+    const response = await fetch(apiPath(`/api/keywords/${id}`));
     const payload = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", payload.detail || "加载失败"));
       return;
     }
     let saved = null;
-    const analysisResponse = await fetch(`/api/keyword-analysis/${id}`);
+    const analysisResponse = await fetch(apiPath(`/api/keyword-analysis/${id}`));
     if (analysisResponse.ok) saved = await analysisResponse.json();
     renderKeywordDetail(payload.cluster, payload.items, saved);
   } catch (_error) {
@@ -665,7 +666,7 @@ async function openKeyword(id) {
 }
 
 async function loadKeywords() {
-  const response = await fetch("/api/keywords");
+  const response = await fetch(apiPath("/api/keywords"));
   if (!response.ok) throw new Error("keywords");
   keywords = await response.json();
   renderKeywordList();
@@ -685,7 +686,7 @@ async function runKeywordAnalyze(id) {
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
   startTimer(elapsed);
   try {
-    const response = await fetch(`/api/keywords/${id}/analyze`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/keywords/${id}/analyze`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (token !== analyzeToken) return;
     if (!response.ok) {
@@ -718,7 +719,7 @@ async function seedKeywordPool() {
   button.disabled = true;
   jobEl.textContent = "初始化中";
   try {
-    const response = await fetch("/api/keywords/seed", { method: "POST" });
+    const response = await fetch(apiPath("/api/keywords/seed"), { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       jobEl.textContent = "初始化失败";
@@ -758,6 +759,7 @@ function applyChrome(mode) {
   const briefing = mode === "briefing" || mode === "signals";
   document.body.dataset.screen = briefing ? "briefing" : board ? "board" : "workspace";
   document.body.dataset.focus = focused ? "work" : "admin";
+  document.body.dataset.layout = mode === "briefing" ? "cockpit" : "";
   document.getElementById("admin-nav").hidden = !(admin || mode === "sources");
   document.querySelectorAll("#admin-nav > button").forEach((button) => {
     if (button.id === "add-source") button.hidden = mode !== "sources";
@@ -1344,35 +1346,70 @@ function rankNames(rows) {
   return (rows || []).slice(0, 3).map((row) => row.domain).filter(Boolean).join("、") || "--";
 }
 
-function renderMarketPulse() {
-  const section = el("section", "cockpit-card");
-  section.id = "market-pulse";
-  section.append(el("p", "section-label", "Market Intelligence Briefing"));
-  section.append(el("h2", null, "Market Pulse"));
-  const pulse = marketPulse;
-  if (!pulse) {
-    section.append(el("div", "empty", "大盘参数暂时没有算出来。"));
-    return section;
+function paintDeskFlags() {
+  const serp = document.getElementById("flag-serp");
+  const cse = document.getElementById("flag-cse");
+  const provider = String(serpChoice?.provider || serpChoice?.serp_provider || "serper");
+  if (serp) {
+    serp.textContent = provider === "serper" ? "SERPER READY" : `SERP ${provider.toUpperCase()}`;
+    serp.className = provider === "serper" ? "flag ready" : "flag";
   }
-  const volume = pulse.signal_volume || {};
-  const gap = pulse.validation_gap || {};
-  const keywords = (dashboardTrends.items || []).slice(0, 3).map((row) => row.keyword).filter(Boolean);
-  const grid = el("div", "pulse-grid");
+  const status = String(googleCseCard?.api_status || googleCseCard?.last_test_status || "blocked_entitlement");
+  if (cse) {
+    cse.textContent = status === "blocked_entitlement" ? "GOOGLE CSE BLOCKED" : `GOOGLE CSE ${status.toUpperCase()}`;
+    cse.className = status.includes("block") ? "flag blocked" : "flag";
+  }
+}
+
+function statLine(label, value) {
+  const row = el("div", "stat-line");
+  row.append(el("span", null, label));
+  row.append(el("b", null, value || "Missing"));
+  return row;
+}
+
+function renderTodayBrief(opportunities) {
+  const section = el("section", "section cockpit-card today-brief full");
+  section.id = "today-brief";
+  const names = opportunities.slice(0, 3).map((row) => row.domain).filter(Boolean);
+  const quality = marketPulse?.opportunity_quality || {};
+  const p0 = Number(quality.p0) || 0;
+  const p1 = Number(quality.p1) || 0;
+  const ready = evidenceSlots().filter(([, status]) => status === "Ready").length;
+  const blockers = evidenceSlots().filter(([, status]) => status === "Missing" || status === "Blocked").length;
+  const copy = el("div");
+  copy.append(el("p", "section-label", "Today Intelligence Brief"));
+  copy.append(el("h2", null, `当前不能正式 Build。优先研究 ${names.join(" / ") || "还没有够格的域名"}。`));
+  const list = el("ul", "brief-points");
+  ["机会质量：P0 / P1 共 " + (p0 + p1), "主要缺口：Validation Missing / SERP Top10 不足 / 竞品页不足", "下一步：Run SERP / Crawl Domain / Attach Evidence"].forEach((line) => list.append(el("li", null, line)));
+  copy.append(list);
+  const metrics = el("div", "brief-metrics");
   [
-    ["今日新增", `${volume.today || 0} 条信号`, "只统计本地库，刷新不会去拉外部接口。"],
-    ["近 7 日", `${volume.last_7d || 0} 条信号`, "用来看这周有没有新的异常，不是新闻列表。"],
-    ["Top trend keywords", keywords.join("、") || "尚未导入 Google Trends CSV", "热词只说明需求起来了，还要配 SERP 和付费信号。"],
-    ["Top growth domains", rankNames(dashboardRanks.traffic), "流量突增要核对是不是真实需求，还是刷量。"],
-    ["Top payment domains", rankNames(dashboardRanks.payment), "支付榜说明有人在付钱，不能单独作为 Build 依据。"],
-    ["当前缺口", gap.status === "missing" ? "Validation 全缺" : "验证还不完整", "没有页面验证就不能正式做独立站。下一步先补 SERP 和 pricing。"],
-  ].forEach(([title, line, note]) => {
-    const card = el("article", "evidence-card");
-    card.append(el("h3", null, title));
-    card.append(el("p", null, line));
-    card.append(el("div", "clamp", note));
-    grid.append(card);
-  });
-  section.append(grid);
+    ["Signals 7D", String(marketPulse?.signal_volume?.last_7d ?? "Missing")],
+    ["P0/P1 Opportunities", String(p0 + p1)],
+    ["Ready Evidence", String(ready)],
+    ["Blockers", String(blockers)],
+  ].forEach(([label, value]) => metrics.append(metricNode(label, value, false)));
+  section.append(copy, metrics);
+  return section;
+}
+
+function renderMarketPulse() {
+  const section = el("section", "section cockpit-card third");
+  section.id = "market-pulse";
+  section.append(el("p", "section-label", "Market Pulse"));
+  const pulse = marketPulse;
+  const volume = pulse?.signal_volume || {};
+  const payment = pulse?.payment_density || {};
+  const heat = (pulse?.category_heat || []).slice().sort((a, b) => Number(b.heat_score) - Number(a.heat_score))[0];
+  const growth = (dashboardRanks.traffic || [])[0]?.domain;
+  const paid = (dashboardRanks.payment || [])[0]?.domain;
+  section.append(statLine("7D Signals", volume.last_7d ? String(volume.last_7d) : "Missing"));
+  section.append(statLine("New Opportunities", pulse ? String(Number(dashboardExternal.total) || visibleOpportunities().length) : "Missing"));
+  section.append(statLine("Payment Density", payment.ratio === undefined ? "Missing" : percentText(payment.ratio)));
+  section.append(statLine("Top Category", heat?.category || "Missing"));
+  section.append(statLine("Top Growth Domain", growth || "Missing"));
+  section.append(statLine("Top Payment Domain", paid || "Missing"));
   return section;
 }
 
@@ -1476,7 +1513,6 @@ function signalActions(row) {
   const actions = el("div", "filter-bar");
   actions.append(actionButton("Add to Dossier", (button) => runDossierFeedAction(row, "add", button)));
   actions.append(actionButton("Ignore", (button) => runDossierFeedAction(row, "ignore", button)));
-  actions.append(actionButton("Research Next", (button) => runDossierFeedAction(row, "research", button)));
   return actions;
 }
 
@@ -1487,10 +1523,26 @@ function opportunityActions(row) {
     if (known) openDossier(known);
     else runDomainDossier(row.domain, "open", button);
   }));
-  actions.append(actionButton("Create Dossier", (button) => runDomainDossier(row.domain, "create", button)));
   actions.append(actionButton("Attach Evidence", (button) => runDomainDossier(row.domain, "create", button)));
   actions.append(actionButton("Research Next", (button) => runDomainDossier(row.domain, "research", button)));
   return actions;
+}
+
+function statusChip(label, status) {
+  const raw = String(status || "Missing");
+  const lower = raw.toLowerCase();
+  const kind = lower.includes("ready") ? "ready" : lower.includes("partial") ? "partial" : lower.includes("block") ? "blocked" : "missing";
+  return el("span", `chip chip-${kind}`, `${label} ${raw}`);
+}
+
+function sourceBadge(row) {
+  const source = `${row.source || ""} ${row.source_name || ""} ${row.signal || ""}`.toLowerCase();
+  if (source.includes("trend")) return "Google Trends";
+  if (source.includes("sitedata") || source.includes("stripe") || source.includes("traffic") || source.includes("dr")) return "SiteData";
+  if (source.includes("serper") || source.includes("serp")) return "Serper";
+  if (source.includes("product")) return "Product Hunt";
+  if (source.includes("hacker") || source.includes(" hn")) return "HN";
+  return "Manual";
 }
 
 function tagRow(names, present) {
@@ -1503,159 +1555,180 @@ function tagRow(names, present) {
 }
 
 function renderTopSignals() {
-  const section = el("section", "cockpit-card");
+  const section = el("section", "section cockpit-card left-8");
   section.id = "top-signals";
   section.append(el("p", "section-label", "Top Intelligence Signals"));
-  const rows = (dashboardFeed.items || []).slice(0, 10);
+  const rows = (dashboardFeed.items || []).filter((row) => queryHit(row.title, row.domain, row.related_keyword, row.signal, row.why_it_matters, row.why)).slice(0, 6);
   if (!rows.length) {
     section.append(el("div", "empty", "今天还没有新的情报信号。"));
     return section;
   }
-  const grid = el("div", "desk-grid");
   rows.forEach((row) => {
-    const card = el("article", "intel-card");
-    card.append(el("h3", null, row.title || row.domain || "--"));
-    card.append(el("div", "clamp", `${row.source || row.source_name || "--"} · ${row.domain || "--"} · ${row.related_keyword || row.signal || row.feed_type || "signal"}`));
-    card.append(el("div", "clamp", `信号分 ${row.score ?? row.signal_score ?? "--"}`));
-    card.append(el("p", null, row.why_it_matters || row.why || "这条信号还缺一句判断。"));
-    const tags = Array.isArray(row.evidence_tags) ? row.evidence_tags : String(row.evidence_tags || row.signal || "").split(",").filter(Boolean);
-    card.append(el("div", "clamp", `证据：${tags.join(" · ") || "--"}`));
-    const missing = Array.isArray(row.missing_evidence) ? row.missing_evidence.join(" / ") : (row.missing_evidence || "--");
-    card.append(el("div", "clamp", `缺口：${missing}`));
-    card.append(signalActions(row));
-    grid.append(card);
+    const card = el("article", "signal-row");
+    const meta = el("div", "signal-meta");
+    meta.append(el("span", "source-badge", sourceBadge(row)));
+    meta.append(el("span", "type-badge", row.signal || row.feed_type || "signal"));
+    meta.append(el("b", "num", String(row.score ?? row.signal_score ?? "--")));
+    card.append(meta);
+    card.append(el("h3", "clamp-2", row.title || row.domain || "--"));
+    card.append(el("div", "meta-line", row.domain || row.related_keyword || "--"));
+    const why = el("p", "clamp-2", row.why_it_matters || row.why || "这条信号还缺一句判断。");
+    card.append(why);
+    const known = knownDossierId(row.domain);
+    card.append(el("div", "meta-line", known ? `案卷 ${deskStatus((dashboardDossiers.items || []).find((item) => item.id === known) || {})}` : "未立案"));
+    const more = el("button", "text-btn", "展开");
+    more.type = "button";
+    more.addEventListener("click", () => {
+      const open = why.classList.toggle("clamp-2");
+      more.textContent = open ? "展开" : "收起";
+    });
+    const bar = signalActions(row);
+    bar.append(more);
+    card.append(bar);
+    section.append(card);
   });
-  section.append(grid);
   return section;
 }
 
 function renderTopOpportunities() {
-  const section = el("section", "cockpit-card");
+  const section = el("section", "section cockpit-card left-8");
   section.id = "top-opportunities";
-  section.append(el("p", "section-label", "Top External Opportunities"));
-  const rows = visibleOpportunities().slice(0, 8);
+  section.append(el("p", "section-label", "Top Opportunities"));
+  const rows = visibleOpportunities().filter((row) => queryHit(row.domain, row.decision, row.reason, row.build_block)).slice(0, 5);
   if (!rows.length) {
     section.append(el("div", "empty", "今天还没有够格进入研究的外部机会。"));
     return section;
   }
-  const names = ["Trend", "SERP", "Traffic", "Authority", "Payment", "Competitor", "Validation"];
-  const grid = el("div", "desk-grid");
   rows.forEach((row) => {
-    const card = el("article", "intel-card");
-    const top = el("div", "slot-row");
-    const title = el("h3", null, row.domain || "--");
+    const tier = tierLabel(row.opportunity_tier).toLowerCase();
+    const card = el("article", `opp-card tier-${tier}`);
+    const top = el("div", "opp-top");
+    const title = el("h3", null, `${tierLabel(row.opportunity_tier)}  ${row.domain || "--"}`);
     title.addEventListener("click", () => {
       const known = knownDossierId(row.domain, row.dossier_id);
       if (known) openDossier(known);
       else runDomainDossier(row.domain, "open", title);
     });
     top.append(title);
-    top.append(priorityBadge(row.opportunity_tier));
+    top.append(el("b", "num", `Score ${row.opportunity_score ?? "--"}`));
     card.append(top);
-    card.append(el("div", "clamp", `Score ${row.opportunity_score ?? "--"} · ${row.decision || tierLabel(row.opportunity_tier)}`));
-    card.append(el("p", null, row.build_block || "Validation 缺失，不能正式 Build。"));
-    card.append(el("p", null, `为什么：${row.reason || "按规则分看，还要补证据。"}`));
-    if ((row.score_notes || []).length) card.append(el("div", "clamp", `扣分：${row.score_notes.join("；")}`));
-    const present = names.filter((name) => (row.evidence_tags || row.tags || []).includes(name) || (name === "Crawl" && (row.evidence_tags || []).includes("Crawl")));
-    card.append(tagRow(names, present));
-    const missing = Array.isArray(row.missing_evidence) ? row.missing_evidence.join(" / ") : (row.missing_evidence || "--");
-    card.append(el("div", "clamp", `缺口：${missing}`));
-    card.append(el("div", "clamp", `下一步：${row.next_action || "--"}`));
+    card.append(el("div", "decision-line", row.decision || "Watch"));
+    const chips = el("div", "chip-row");
+    chips.append(statusChip("Payment", row.payment_status));
+    chips.append(statusChip("Traffic", row.traffic_status));
+    chips.append(statusChip("Authority", row.authority_status));
+    chips.append(statusChip("SERP", row.serp_status));
+    chips.append(statusChip("Validation", (row.missing_evidence || []).includes("Validation") ? "Missing" : "Ready"));
+    card.append(chips);
+    card.append(el("p", "clamp-2", `为什么值得看：${row.reason || row.build_block || "证据还不够判断。"}`));
+    const gaps = el("ul", "gap-list");
+    (row.missing_evidence || []).slice(0, 3).forEach((gap) => gaps.append(el("li", null, gap)));
+    card.append(gaps);
     card.append(opportunityActions(row));
-    grid.append(card);
+    section.append(card);
   });
-  section.append(grid);
   return section;
 }
 
 function renderDossierQueue() {
-  const section = el("section", "cockpit-card");
+  const section = el("section", "section cockpit-card right-4");
   section.id = "dossier-queue";
   section.append(el("p", "section-label", "Dossier Queue"));
-  const rows = dashboardDossiers.items || [];
+  const rows = (dashboardDossiers.items || []).filter((row) => queryHit(row.domain, row.opportunity_status, row.next_action, row.product_name));
   if (!rows.length) {
-    section.append(el("div", "empty", "还没有案卷。把一条信号加进案卷后，这里会出现研究队列。"));
+    section.append(el("div", "empty", "还没有案卷。"));
     return section;
   }
   rows.forEach((row) => {
-    const line = el("article", "intel-card");
-    const top = el("div", "slot-row");
+    const line = el("article", "queue-card");
+    const top = el("div", "opp-top");
     top.append(el("h3", null, row.domain || "--"));
-    top.append(el("span", "prio", deskStatus(row)));
+    top.append(actionButton("Open", () => openDossier(row.id)));
     line.append(top);
-    line.append(el("div", "clamp", `Score ${row.evidence_score ?? "--"} · 证据 ${row.evidence_count ?? 0} 条 · ${row.priority_level || "--"}`));
-    line.append(el("div", "clamp", `缺口：${(row.missing_evidence || []).slice(0, 3).join("；") || "--"}`));
-    line.append(el("div", "clamp", `下一步：${row.next_action || "--"}`));
-    line.append(el("p", null, decisionBoundary(row)));
-    line.addEventListener("click", () => openDossier(row.id));
+    line.append(el("div", "meta-line", `${deskStatus(row)} · Score ${row.evidence_score ?? "--"}`));
+    line.append(el("div", "meta-line", `Evidence ${row.evidence_count ?? 0} / Missing ${(row.missing_evidence || []).length}`));
+    line.append(el("div", "meta-line", `Next: ${row.next_action || "打开案卷核对"}`));
     section.append(line);
   });
   return section;
 }
 
 function renderCoverageBoard() {
-  const board = el("div", "evidence-board");
+  const section = el("section", "section cockpit-card third");
+  section.id = "evidence-coverage";
+  section.append(el("p", "section-label", "Evidence Coverage"));
+  const board = el("div", "coverage-grid");
   evidenceSlots().forEach(([name, status]) => {
     const summary = evidenceSummary(name);
-    const card = el("article", "evidence-card");
-    card.append(el("h3", null, name));
-    card.append(el("div", statusClass(status), `${status} · ${summary.record_count} 条 · 最近 ${summary.latest_month || "--"}`));
-    card.append(el("div", "clamp", `Top: ${(summary.domains || []).slice(0, 3).join(", ") || "--"}`));
-    card.append(el("div", "clamp", `来源：${summary.source_name || "--"}`));
+    const card = el("article", "coverage-card");
+    card.append(el("h3", null, name.replace(" Signal", "")));
+    card.append(el("div", statusClass(status), status || "Missing"));
+    card.append(el("div", "meta-line", `records ${summary.record_count || 0}`));
+    card.append(el("div", "meta-line", `latest ${summary.latest_month || "Missing"}`));
+    card.append(el("div", "meta-line", summary.source_name || "Missing"));
     board.append(card);
   });
-  return board;
+  section.append(board);
+  return section;
+}
+
+function renderProviderStatus() {
+  const section = el("section", "section cockpit-card third");
+  section.id = "provider-status";
+  section.append(el("p", "section-label", "Provider Status"));
+  const provider = String(serpChoice?.provider || serpChoice?.serp_provider || "serper");
+  const cse = String(googleCseCard?.api_status || "blocked_entitlement");
+  section.append(statLine("Workspace", "LOCAL"));
+  section.append(statLine("SERP", provider === "serper" ? "Serper Ready" : provider));
+  section.append(statLine("Google CSE", cse));
+  section.append(el("p", "meta-line", "刷新只读本地状态。Test Google CSE 才会请求 Google。"));
+  return section;
 }
 
 function renderNextActions(names) {
-  const section = el("section", "cockpit-card");
+  const section = el("section", "section cockpit-card right-4");
   section.id = "next-actions";
   section.append(el("p", "section-label", "Next Actions"));
-  const lines = [
-    `优先打开 ${names.slice(0, 3).join("、") || "还没有干净域名"} 的案卷，核对首页、pricing 和付费入口。`,
-    "搜索证据还不完整。需要时再点 Run SERP，默认走 Serper，刷新页面不会自己去查。",
-    "Validation 仍然缺失。现在只能研究，不能正式 Build。",
-    "支付和流量已经够看商业化痕迹，但不能单独作为 Build 依据。",
-  ];
-  lines.forEach((line) => section.append(el("p", null, line)));
+  const list = el("ul", "brief-points");
+  [
+    `打开 ${names[0] || "优先域名"} 的案卷，核对 pricing。`,
+    "Run SERP：只在案卷里手动点，默认走 Serper。",
+    "Crawl Domain：只在案卷里手动点，用来补页面验证。",
+    "Attach Evidence：把已有信号挂进案卷，不发起外部请求。",
+  ].forEach((line) => list.append(el("li", null, line)));
+  section.append(list);
   const known = (dashboardDossiers.items || [])[0];
-  if (known) {
-    section.append(actionButton("打开优先案卷", () => openDossier(known.id)));
-  }
+  if (known) section.append(actionButton("Open Dossier", () => openDossier(known.id)));
   return section;
 }
 
 function renderTrendsRadar() {
-  const section = el("section", "cockpit-card");
+  const section = el("section", "section cockpit-card full");
   section.id = "trends-radar";
-  section.append(el("p", "section-label", "Google Trends Radar"));
-  const actions = el("div", "filter-bar");
-  actions.append(actionButton("Import Google Trends CSV", () => openIntakeLane("google_trends")));
-  actions.append(actionButton("View Trend Signals", () => {
-    const node = document.getElementById("trends-radar");
-    if (node) node.scrollIntoView({ block: "start" });
-  }));
-  section.append(actions);
-  const rows = dashboardTrends.items || [];
+  const head = el("div", "opp-top");
+  head.append(el("p", "section-label", "Google Trends Radar"));
+  head.append(el("span", statusClass((dashboardTrends.items || []).length ? "Partial" : "Missing"), (dashboardTrends.items || []).length ? "Partial" : "Missing"));
+  section.append(head);
+  const rows = (dashboardTrends.items || []).filter((row) => queryHit(row.keyword, row.related_queries, row.region));
   if (!rows.length) {
-    section.append(el("div", "empty", "尚未导入 Google Trends CSV"));
+    section.append(el("p", null, (dashboardTrends.items || []).length ? "本地热词里没有这条。" : "尚未导入 Google Trends CSV"));
+    if (!(dashboardTrends.items || []).length) section.append(actionButton("Import Google Trends CSV", () => openIntakeLane("google_trends")));
     return section;
   }
-  const grid = el("div", "desk-grid");
-  rows.slice(0, 8).forEach((row) => {
-    const card = el("article", "intel-card");
-    card.append(el("h3", null, row.keyword || "--"));
-    card.append(el("div", "clamp", `搜索量 ${row.search_volume || "--"} · 开始 ${row.started_at || "--"} · 增长 ${row.growth || "--"}`));
-    card.append(el("div", "clamp", `相关查询：${row.related_queries || "--"}`));
-    card.append(el("div", "clamp", `${row.region || "--"} · ${row.period || "--"}`));
+  rows.slice(0, 4).forEach((row) => {
+    const line = el("div", "trend-line");
+    const related = String(row.related_queries || "").split(/[|,]/).map((item) => item.trim()).filter(Boolean);
+    line.append(el("b", null, row.keyword || "--"));
+    line.append(el("span", "num", row.search_volume || "Missing"));
+    line.append(el("span", null, `${row.growth || "Missing"} · ${row.started_at || row.period || "Missing"}`));
+    line.append(el("span", null, row.region || "Missing"));
+    line.append(el("span", null, `${related.length} related`));
     const bar = el("div", "filter-bar");
     bar.append(actionButton("Run SERP", (button) => runTrendSerp(row.keyword, button)));
     bar.append(actionButton("Create Dossier", (button) => runDomainDossier(row.keyword, "create", button)));
-    bar.append(actionButton("Ignore", (button) => ignoreTrend(row.id, button)));
-    card.append(bar);
-    grid.append(card);
+    line.append(bar);
+    section.append(line);
   });
-  section.append(grid);
   return section;
 }
 
@@ -1663,7 +1736,7 @@ async function runTrendSerp(keyword, button) {
   button.disabled = true;
   jobEl.textContent = "SERP 查询中";
   try {
-    const response = await fetch("/api/serp/query", {
+    const response = await fetch(apiPath("/api/serp/query"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: keyword, num: 10, gl: "us", hl: "en" }),
@@ -1681,7 +1754,7 @@ async function runTrendSerp(keyword, button) {
 async function ignoreTrend(id, button) {
   button.disabled = true;
   try {
-    const response = await fetch(`/api/trends/${id}/ignore`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/trends/${id}/ignore`), { method: "POST" });
     const data = await response.json();
     if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "忽略失败");
     jobEl.textContent = "已忽略这条热词";
@@ -1698,20 +1771,53 @@ function openIntakeLane(lane) {
   setView("intake");
 }
 
+function queryHit(...parts) {
+  const query = deskQuery.trim().toLowerCase();
+  if (!query) return true;
+  return parts.filter(Boolean).join(" ").toLowerCase().includes(query);
+}
+
+function renderDeskSearch() {
+  const section = el("section", "section cockpit-card full desk-search");
+  section.id = "desk-search";
+  section.append(el("p", "section-label", "Intelligence Search"));
+  const input = document.createElement("input");
+  input.id = "desk-query";
+  input.type = "search";
+  input.placeholder = "检索域名、热词、信号、案卷";
+  input.value = deskQuery;
+  input.autocomplete = "off";
+  input.addEventListener("input", () => {
+    deskQuery = input.value;
+    const caret = input.selectionStart;
+    renderBriefing();
+    const next = document.getElementById("desk-query");
+    if (!next) return;
+    next.focus();
+    next.setSelectionRange(caret, caret);
+  });
+  section.append(input);
+  section.append(el("p", "meta-line", deskQuery.trim() ? `本地筛选「${deskQuery.trim()}」。不请求外部接口。` : "只在已加载的机会、信号、热词和案卷里查找。"));
+  return section;
+}
+
 function renderBriefing() {
   const root = document.getElementById("cockpit");
   if (!root) return;
+  paintDeskFlags();
+  const opportunities = visibleOpportunities();
   root.replaceChildren();
+  root.classList.add("page");
+  root.append(renderDeskSearch());
+  root.append(renderTodayBrief(opportunities));
   root.append(renderMarketPulse());
+  root.append(renderCoverageBoard());
+  root.append(renderProviderStatus());
   root.append(renderTrendsRadar());
-  root.append(renderTopSignals());
   root.append(renderTopOpportunities());
   root.append(renderDossierQueue());
-  const evidence = el("section", "cockpit-card");
-  evidence.id = "evidence-coverage";
-  evidence.append(el("p", "section-label", "Evidence Coverage"));
-  evidence.append(renderCoverageBoard());
-  root.append(evidence);
+  root.append(renderTopSignals());
+  root.append(renderNextActions(opportunities.map((row) => row.domain).filter(Boolean)));
 }
 
 function renderSignals() {
@@ -1732,7 +1838,7 @@ async function loadDashboardEvidence(cardId) {
   if (!box) return;
   box.replaceChildren(el("div", "hint", "Source Evidence"));
   try {
-    const response = await fetch(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`);
+    const response = await fetch(apiPath(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`));
     const rows = await response.json();
     if (cardId !== dashboardOpportunityId) return;
     if (!response.ok || !Array.isArray(rows) || rows.length === 0) {
@@ -1753,7 +1859,7 @@ async function loadDashboardEvidence(cardId) {
 
 async function loadJsonList(url) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(apiPath(url));
     if (!response.ok) return [];
     const data = await response.json();
     return Array.isArray(data) ? data : [];
@@ -1764,7 +1870,7 @@ async function loadJsonList(url) {
 
 async function loadEvidenceStats() {
   try {
-    const response = await fetch("/api/evidence/stats");
+    const response = await fetch(apiPath("/api/evidence/stats"));
     if (!response.ok) return { groups: [], record_types: [] };
     const data = await response.json();
     return data && Array.isArray(data.record_types) ? data : { groups: [], record_types: [], serp_urls: [] };
@@ -1775,7 +1881,7 @@ async function loadEvidenceStats() {
 
 async function loadJsonObject(url) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(apiPath(url));
     if (!response.ok) return null;
     return await response.json();
   } catch (_error) {
@@ -1784,10 +1890,10 @@ async function loadJsonObject(url) {
 }
 
 async function loadDashboard() {
-  const [oppRes, kwRes, compRes, stats, latest, external, feed, today, ranks, status, dossiers, siteSignals, siteOpps, pulse, trends] = await Promise.all([
-    fetch("/api/opportunities"),
-    fetch("/api/keywords"),
-    fetch("/api/competitors"),
+  const [oppRes, kwRes, compRes, stats, latest, external, feed, today, ranks, status, dossiers, siteSignals, siteOpps, pulse, trends, serpProvider, cseCard] = await Promise.all([
+    fetch(apiPath("/api/opportunities")),
+    fetch(apiPath("/api/keywords")),
+    fetch(apiPath("/api/competitors")),
     loadEvidenceStats(),
     loadJsonObject("/api/explorer/records?limit=10"),
     loadJsonObject("/api/external-opportunities?limit=15&home=true"),
@@ -1800,6 +1906,8 @@ async function loadDashboard() {
     loadJsonObject("/api/sitedata/opportunities?limit=10"),
     loadJsonObject("/api/market/pulse"),
     loadJsonObject("/api/trends?limit=8"),
+    loadJsonObject("/api/providers/serp"),
+    loadJsonObject("/api/providers/google-cse"),
   ]);
   if (!oppRes.ok || !kwRes.ok || !compRes.ok) throw new Error("dashboard");
   opportunities = await oppRes.json();
@@ -1816,6 +1924,8 @@ async function loadDashboard() {
   dashboardRanks = ranks && Array.isArray(ranks.payment) ? ranks : { payment: [], traffic: [], authority: [] };
   marketPulse = pulse && pulse.signal_volume ? pulse : null;
   dashboardTrends = trends && Array.isArray(trends.items) ? trends : { items: [], total: 0 };
+  if (serpProvider) serpChoice = serpProvider;
+  if (cseCard && !cseCard.api_key_value) googleCseCard = cseCard;
   collectStatus = status || collectStatus;
   renderCollectStatus();
   dashboardFeeds = { imports: [], serp: [], payment: [], traffic: [], keywords: [], crawl: [], authority: [], validation: [] };
@@ -2060,14 +2170,14 @@ async function openCompetitor(id) {
   renderCompetitorList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/competitors/${id}`);
+    const response = await fetch(apiPath(`/api/competitors/${id}`));
     const page = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", page.detail || "加载失败"));
       return;
     }
     let saved = null;
-    const analysisResponse = await fetch(`/api/competitor-analysis/${id}`);
+    const analysisResponse = await fetch(apiPath(`/api/competitor-analysis/${id}`));
     if (analysisResponse.ok) saved = await analysisResponse.json();
     renderCompetitorDetail(page, saved);
   } catch (_error) {
@@ -2076,7 +2186,7 @@ async function openCompetitor(id) {
 }
 
 async function loadCompetitors() {
-  const response = await fetch("/api/competitors");
+  const response = await fetch(apiPath("/api/competitors"));
   if (!response.ok) throw new Error("competitors");
   competitors = await response.json();
   renderCompetitorList();
@@ -2096,7 +2206,7 @@ async function runCompetitorAnalyze(id) {
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
   startTimer(elapsed);
   try {
-    const response = await fetch(`/api/competitors/${id}/analyze?type=fast`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/competitors/${id}/analyze?type=fast`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (token !== analyzeToken) return;
     if (!response.ok) {
@@ -2138,7 +2248,7 @@ async function showCompetitorForm() {
   form.className = "page-form";
   let clusterOptions = `<option value="">选择关键词簇</option>`;
   try {
-    const response = await fetch("/api/keywords");
+    const response = await fetch(apiPath("/api/keywords"));
     if (response.ok) {
       const clusters = await response.json();
       clusterOptions += clusters.map((cluster) => {
@@ -2178,7 +2288,7 @@ async function showCompetitorForm() {
     const button = form.querySelector("button");
     button.disabled = true;
     try {
-      const response = await fetch("/api/competitors", {
+      const response = await fetch(apiPath("/api/competitors"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -2206,7 +2316,7 @@ async function buildEventList() {
   button.disabled = true;
   jobEl.textContent = "构建中";
   try {
-    const response = await fetch("/api/events/build", { method: "POST" });
+    const response = await fetch(apiPath("/api/events/build"), { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       jobEl.textContent = "构建失败";
@@ -2223,7 +2333,7 @@ async function buildEventList() {
 }
 
 async function refresh() {
-  const response = await fetch("/api/items?limit=50");
+  const response = await fetch(apiPath("/api/items?limit=50"));
   if (!response.ok) throw new Error("items");
   items = await response.json();
   renderRadar();
@@ -2237,7 +2347,7 @@ async function runCollect() {
   if (headerCollect) headerCollect.disabled = true;
   jobEl.textContent = "采集中";
   try {
-    const response = await fetch("/api/intake/collect-now", { method: "POST" });
+    const response = await fetch(apiPath("/api/intake/collect-now"), { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       jobEl.textContent = "采集失败";
@@ -2270,7 +2380,7 @@ function traceCell(text) {
 async function showTrace() {
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch("/api/debug/trace");
+    const response = await fetch(apiPath("/api/debug/trace"));
     const rows = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", "加载失败"));
@@ -2283,7 +2393,7 @@ async function showTrace() {
     clearButton.type = "button";
     clearButton.textContent = "清空记录";
     clearButton.addEventListener("click", async () => {
-      await fetch("/api/debug/trace", { method: "DELETE" });
+      await fetch(apiPath("/api/debug/trace"), { method: "DELETE" });
       showTrace();
     });
     actions.append(clearButton);
@@ -2411,14 +2521,14 @@ async function openOpportunity(id) {
   renderOpportunityList();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/opportunities/${id}`);
+    const response = await fetch(apiPath(`/api/opportunities/${id}`));
     const card = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", card.detail || "加载失败"));
       return;
     }
     let saved = null;
-    const analysisResponse = await fetch(`/api/opportunity-analysis/${id}`);
+    const analysisResponse = await fetch(apiPath(`/api/opportunity-analysis/${id}`));
     if (analysisResponse.ok) saved = await analysisResponse.json();
     renderOpportunityDetail(card, saved);
   } catch (_error) {
@@ -2427,7 +2537,7 @@ async function openOpportunity(id) {
 }
 
 async function loadOpportunities() {
-  const response = await fetch("/api/opportunities");
+  const response = await fetch(apiPath("/api/opportunities"));
   if (!response.ok) throw new Error("opportunities");
   opportunities = await response.json();
   renderOpportunityList();
@@ -2447,7 +2557,7 @@ async function searchCompetitors(cluster) {
   if (button) button.disabled = true;
   jobEl.textContent = "查询 SERP";
   try {
-    const response = await fetch("/api/google-search/import-competitors", {
+    const response = await fetch(apiPath("/api/google-search/import-competitors"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2479,7 +2589,7 @@ async function generateOpportunity(clusterId) {
   if (button) button.disabled = true;
   jobEl.textContent = "生成项目卡";
   try {
-    const response = await fetch(`/api/opportunities/from-keyword/${clusterId}`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/opportunities/from-keyword/${clusterId}`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       jobEl.textContent = "生成失败";
@@ -2509,7 +2619,7 @@ async function runOpportunityAnalyze(id) {
   status.textContent = "模型分析可能需要 30–90 秒，请勿重复点击";
   startTimer(elapsed);
   try {
-    const response = await fetch(`/api/opportunities/${id}/analyze`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/opportunities/${id}/analyze`), { method: "POST" });
     const data = await response.json().catch(() => ({}));
     if (token !== analyzeToken) return;
     if (!response.ok) {
@@ -2715,7 +2825,7 @@ async function saveSerpProvider(select) {
   const name = select.value;
   jobEl.textContent = "更新 SERP_PROVIDER";
   try {
-    const response = await fetch("/api/providers/serp", {
+    const response = await fetch(apiPath("/api/providers/serp"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: name }),
@@ -2744,7 +2854,7 @@ async function runGoogleCseTest(button) {
   if (result) result.textContent = "正在测试 Google CSE";
   jobEl.textContent = "测试 Google CSE";
   try {
-    const response = await fetch("/api/providers/google-cse/test", {
+    const response = await fetch(apiPath("/api/providers/google-cse/test"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query: "OpenAI compatible API", num: 3 }),
@@ -2824,7 +2934,7 @@ async function runSource(sourceId, button) {
   button.disabled = true;
   jobEl.textContent = "采集来源";
   try {
-    const response = await fetch(`/api/sources/${sourceId}/run`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/sources/${sourceId}/run`), { method: "POST" });
     const data = await response.json();
     jobEl.textContent = response.ok ? `${data.status} +${data.records_collected || 0}` : (data.detail || "采集失败");
     await loadSources();
@@ -2840,7 +2950,7 @@ async function toggleSource(source, button) {
   button.disabled = true;
   const enabled = source.enabled ? 0 : 1;
   try {
-    const response = await fetch(`/api/sources/${source.id}/enabled?enabled=${enabled}`, { method: "POST" });
+    const response = await fetch(apiPath(`/api/sources/${source.id}/enabled?enabled=${enabled}`), { method: "POST" });
     if (!response.ok) {
       jobEl.textContent = "更新失败";
       return;
@@ -2859,7 +2969,7 @@ async function viewSourceRecords(sourceId) {
   if (!box) return;
   box.replaceChildren(el("div", "hint", "加载记录"));
   try {
-    const response = await fetch(`/api/sources/${sourceId}/records`);
+    const response = await fetch(apiPath(`/api/sources/${sourceId}/records`));
     const rows = await response.json();
     if (!response.ok || !Array.isArray(rows) || !rows.length) {
       box.replaceChildren(el("div", "empty", "这个来源还没有采集记录"));
@@ -2890,14 +3000,14 @@ async function openSource(id) {
 }
 
 async function loadSources() {
-  const response = await fetch("/api/sources");
+  const response = await fetch(apiPath("/api/sources"));
   if (!response.ok) throw new Error("sources");
   dataSources = await response.json();
   const settings = await loadJsonObject("/api/sitedata/settings");
   if (settings) sitedataSettings = settings;
   const overview = await loadJsonObject("/api/intake/overview");
   sitedataConnector = (overview?.connectors || []).find((item) => item.provider === "sitedata") || null;
-  const importsResponse = await fetch("/api/imports");
+  const importsResponse = await fetch(apiPath("/api/imports"));
   sourceImports = importsResponse.ok ? await importsResponse.json() : [];
   renderLedger();
   if (viewMode === "sources") {
@@ -2940,7 +3050,7 @@ function showSourceForm() {
     event.preventDefault();
     button.disabled = true;
     try {
-      const response = await fetch("/api/sources", {
+      const response = await fetch(apiPath("/api/sources"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3021,7 +3131,7 @@ function showImportForm() {
     body.append("record_type", recordType.value);
     body.append("import_name", importName.value.trim());
     try {
-      const response = await fetch("/api/imports/upload-csv", { method: "POST", body });
+      const response = await fetch(apiPath("/api/imports/upload-csv"), { method: "POST", body });
       const data = await response.json();
       if (!response.ok) {
         jobEl.textContent = typeof data.detail === "string" ? data.detail : "导入失败";
@@ -3040,7 +3150,7 @@ function showImportForm() {
     event.preventDefault();
     button.disabled = true;
     try {
-      const response = await fetch("/api/imports/csv", {
+      const response = await fetch(apiPath("/api/imports/csv"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3074,7 +3184,7 @@ async function openImport(id, warning) {
   renderLedger();
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch(`/api/imports/${id}`);
+    const response = await fetch(apiPath(`/api/imports/${id}`));
     const batch = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", batch.detail || "加载失败"));
@@ -3115,7 +3225,7 @@ async function openImport(id, warning) {
         event.preventDefault();
         promote.disabled = true;
         try {
-          const response = await fetch(`/api/imports/${id}/promote-serp-competitors`, {
+          const response = await fetch(apiPath(`/api/imports/${id}/promote-serp-competitors`), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ cluster_id: Number(clusterId.value) }),
@@ -3161,7 +3271,7 @@ async function loadSourceEvidence(cardId) {
   if (!box) return;
   box.replaceChildren(el("div", "hint", "Source Evidence"));
   try {
-    const response = await fetch(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`);
+    const response = await fetch(apiPath(`/api/source-records?linked_table=opportunity_cards&linked_id=${cardId}`));
     const rows = await response.json();
     if (!response.ok || !Array.isArray(rows) || rows.length === 0) {
       box.append(el("div", "empty", SOURCE_GAP));
@@ -3188,7 +3298,7 @@ function appendSourceBind(host, options) {
   button.textContent = "绑定来源";
   form.append(sourceSelect, rawRef, button);
   host.append(form);
-  fetch("/api/sources")
+  fetch(apiPath("/api/sources"))
     .then((response) => response.json())
     .then((sources) => {
       (Array.isArray(sources) ? sources : []).forEach((source) => {
@@ -3206,7 +3316,7 @@ function appendSourceBind(host, options) {
     if (!sourceSelect.value) return;
     button.disabled = true;
     try {
-      const response = await fetch("/api/source-records", {
+      const response = await fetch(apiPath("/api/source-records"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3325,8 +3435,8 @@ async function loadStorageHealth() {
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
     const [healthRes, backupRes] = await Promise.all([
-      fetch("/api/storage/health"),
-      fetch("/api/storage/backups"),
+      fetch(apiPath("/api/storage/health")),
+      fetch(apiPath("/api/storage/backups")),
     ]);
     const data = await healthRes.json();
     const backups = await backupRes.json();
@@ -3345,7 +3455,7 @@ async function runStorageBackup(button) {
   const result = document.getElementById("storage-backup-result");
   if (result) result.textContent = "正在备份";
   try {
-    const response = await fetch("/api/storage/backup", { method: "POST" });
+    const response = await fetch(apiPath("/api/storage/backup"), { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       if (result) result.textContent = data.detail || "备份失败";
@@ -3366,7 +3476,7 @@ async function runStorageExport(button) {
   const result = document.getElementById("storage-backup-result");
   if (result) result.textContent = "正在导出";
   try {
-    const response = await fetch("/api/storage/export", { method: "POST" });
+    const response = await fetch(apiPath("/api/storage/export"), { method: "POST" });
     const data = await response.json();
     if (!response.ok) {
       if (result) result.textContent = data.detail || "导出失败";
@@ -3386,7 +3496,7 @@ async function runStorageExport(button) {
 async function loadProviderHealth() {
   detailEl.replaceChildren(el("div", "empty", "加载中"));
   try {
-    const response = await fetch("/api/providers/health");
+    const response = await fetch(apiPath("/api/providers/health"));
     const data = await response.json();
     if (!response.ok) {
       detailEl.replaceChildren(el("div", "error", "加载失败"));
@@ -3442,8 +3552,8 @@ function statusBadge(status) {
 async function loadIntake() {
   try {
     const [overviewRes, sourceRes] = await Promise.all([
-      fetch("/api/intake/overview"),
-      fetch("/api/sources"),
+      fetch(apiPath("/api/intake/overview")),
+      fetch(apiPath("/api/sources")),
     ]);
     if (!overviewRes.ok) throw new Error("intake");
     const overview = await overviewRes.json();
@@ -3741,7 +3851,7 @@ async function previewIntake() {
   }
   jobEl.textContent = "识别中";
   try {
-    const response = await fetch("/api/imports/upload-batch", { method: "POST", body });
+    const response = await fetch(apiPath("/api/imports/upload-batch"), { method: "POST", body });
     const data = await response.json();
     if (!response.ok) {
       jobEl.textContent = typeof data.detail === "string" ? data.detail : "识别失败";
@@ -3782,7 +3892,7 @@ async function confirmIntake() {
   if (source) payload.source_id = Number(source);
   jobEl.textContent = "导入中";
   try {
-    const response = await fetch("/api/imports/confirm-batch", {
+    const response = await fetch(apiPath("/api/imports/confirm-batch"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -3811,7 +3921,7 @@ async function runIntakeCrawl() {
   };
   jobEl.textContent = "抓取中";
   try {
-    const response = await fetch("/api/crawl/jobs", {
+    const response = await fetch(apiPath("/api/crawl/jobs"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -3831,7 +3941,7 @@ async function runIntakeCrawl() {
 async function pingConnector(path) {
   jobEl.textContent = "占位查询";
   try {
-    const response = await fetch(path, { method: "POST" });
+    const response = await fetch(apiPath(path), { method: "POST" });
     const data = await response.json();
     jobEl.textContent = typeof data.detail === "string" ? data.detail : "占位接口已返回";
   } catch (_error) {
@@ -4025,7 +4135,7 @@ function feedActions(row) {
 async function runFeedAction(feedId, action, button) {
   button.disabled = true;
   try {
-    const response = await fetch(`/api/intelligence/feed/${feedId}/action`, {
+    const response = await fetch(apiPath(`/api/intelligence/feed/${feedId}/action`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action }),
@@ -4163,7 +4273,7 @@ async function loadExplorer() {
   });
   params.set("limit", "50");
   params.set("offset", String(explorerQuery.offset || 0));
-  const response = await fetch(`/api/explorer/records?${params.toString()}`);
+  const response = await fetch(apiPath(`/api/explorer/records?${params.toString()}`));
   if (!response.ok) throw new Error("explorer");
   explorerPage = await response.json();
   if (viewMode === "explorer") renderExplorer();
@@ -4285,7 +4395,7 @@ async function loadExternal() {
   if (externalQuery.domain) params.set("domain", externalQuery.domain);
   params.set("limit", "50");
   params.set("offset", String(externalQuery.offset || 0));
-  const response = await fetch(`/api/external-opportunities?${params.toString()}`);
+  const response = await fetch(apiPath(`/api/external-opportunities?${params.toString()}`));
   if (!response.ok) throw new Error("external");
   externalPage = await response.json();
   if (viewMode === "external") renderExternal();
@@ -4359,7 +4469,7 @@ async function loadBatchList() {
   const box = document.getElementById("intake-batches");
   if (!box) return;
   box.replaceChildren(el("h2", null, "Import Batches"));
-  const response = await fetch("/api/import-batches");
+  const response = await fetch(apiPath("/api/import-batches"));
   if (!response.ok) {
     box.append(el("div", "error", "批次加载失败"));
     return;
@@ -4387,7 +4497,7 @@ async function loadBatchDetail(batchId) {
   const box = document.getElementById("batch-detail");
   if (!box) return;
   box.replaceChildren(el("div", "hint", "加载批次详情"));
-  const response = await fetch(`/api/import-batches/${batchId}`);
+  const response = await fetch(apiPath(`/api/import-batches/${batchId}`));
   const data = await response.json();
   if (!response.ok) {
     box.replaceChildren(el("div", "error", "批次不存在"));
@@ -4662,7 +4772,7 @@ function domainDossierActions(domain) {
 }
 
 async function postDossier(url, body) {
-  const response = await fetch(url, {
+  const response = await fetch(apiPath(url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -4868,7 +4978,7 @@ function renderDossier(data) {
     }
     if (item.screenshot_path) {
       const link = el("a", null, "查看截图");
-      link.href = `/api/dossiers/${dossier.id}/evidence/${item.id}/file`;
+      link.href = apiPath(`/api/dossiers/${dossier.id}/evidence/${item.id}/file`);
       link.target = "_blank";
       line.append(link);
     }
@@ -4954,7 +5064,7 @@ function renderDossier(data) {
     body.append("period_month", shotMonth.value.trim());
     body.append("title", file.files[0].name);
     try {
-      const response = await fetch(`/api/dossiers/${dossier.id}/screenshot`, { method: "POST", body });
+      const response = await fetch(apiPath(`/api/dossiers/${dossier.id}/screenshot`), { method: "POST", body });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "上传失败");
       jobEl.textContent = result.message || "已保存截图证据";

@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -24,6 +25,16 @@ def project_root() -> Path:
 
 
 def db_path() -> Path:
+    raw = os.getenv("DATABASE_URL", "").strip()
+    if raw.startswith("sqlite:"):
+        spec = raw.split("sqlite:", 1)[1]
+        if spec.startswith("////"):
+            return Path(spec[3:])
+        if spec.startswith("///"):
+            relative = spec[3:]
+            if relative.startswith("/"):
+                return Path(relative)
+            return project_root() / relative
     return project_root() / "data" / "pj_intelligence.db"
 
 
