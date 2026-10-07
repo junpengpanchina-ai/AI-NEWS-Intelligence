@@ -728,7 +728,7 @@ async function seedKeywordPool() {
   }
 }
 
-const ADMIN_MODES = ["intake", "health", "sources", "imports", "trace", "items", "events"];
+const ADMIN_MODES = ["intake", "health", "storage", "sources", "imports", "trace", "items", "events"];
 const VERDICT_RANK = { Build: 0, Research: 1, Observe: 2, Reject: 3 };
 const DASH_RANK = {
   Build: 0,
@@ -763,6 +763,7 @@ function applyChrome(mode) {
   document.getElementById("view-competitors").classList.toggle("on", mode === "competitors");
   document.getElementById("view-admin").classList.toggle("on", admin);
   document.getElementById("view-health").classList.toggle("on", mode === "health");
+  document.getElementById("view-storage").classList.toggle("on", mode === "storage");
   document.getElementById("view-intake").classList.toggle("on", mode === "intake");
   document.getElementById("view-sources").classList.toggle("on", mode === "sources");
   document.getElementById("view-imports").classList.toggle("on", mode === "imports");
@@ -780,6 +781,7 @@ function applyChrome(mode) {
     keywords: "KEYWORDS",
     competitors: "COMPETITORS",
     health: "PROVIDER HEALTH",
+    storage: "STORAGE HEALTH",
     intake: "DATA INTAKE",
     sources: "SOURCES",
     imports: "DATA IMPORTS",
@@ -1400,6 +1402,11 @@ function setView(mode) {
   if (mode === "health") {
     listEl.replaceChildren(el("div", "empty", "状态在右侧"));
     loadProviderHealth();
+    return;
+  }
+  if (mode === "storage") {
+    listEl.replaceChildren(el("div", "empty", "状态在右侧"));
+    loadStorageHealth();
     return;
   }
   if (mode === "intake") {
@@ -2661,6 +2668,71 @@ function renderProviderHealth(payload) {
   detailEl.append(check);
   detailEl.append(el("div", "hint", "这些命令只能检查配置，不能解决项目无 Custom Search JSON API 权限。"));
   GCLOUD_CHECKS.forEach((command) => detailEl.append(el("pre", "template-csv", command)));
+}
+
+function renderStorageHealth(data) {
+  detailEl.replaceChildren();
+  const card = el("section", "cockpit-card");
+  card.id = "storage-health";
+  card.append(el("h2", null, "STORAGE HEALTH"));
+  if (!data.persistent_volume) {
+    card.append(el("div", "error", "当前数据库可能在容器内部，重建容器可能导致数据丢失。建议挂载 ./data:/app/data。"));
+  }
+  [
+    `DB 类型：${data.database_type || "--"}`,
+    `DB 路径：${data.database_path || "--"}`,
+    `DB 大小：${data.database_size_mb ?? "--"} MB`,
+    `是否可写：${data.writable ? "是" : "否"}`,
+    `是否持久化挂载：${data.persistent_volume ? "是" : "否"}`,
+    `最近写入时间：${data.last_write_at || "--"}`,
+  ].forEach((line) => card.append(el("div", "clamp", line)));
+  const tables = data.tables || {};
+  ["raw_source_records", "intelligence_feed", "external_opportunities", "intelligence_dossiers"].forEach((name) => {
+    card.append(el("div", "clamp", `${name}：${tables[name] ?? "--"}`));
+  });
+  const button = el("button", null, "本地备份");
+  button.type = "button";
+  button.addEventListener("click", () => runStorageBackup(button));
+  card.append(button);
+  card.append(el("div", "clamp", ""));
+  const result = el("div", "clamp", "");
+  result.id = "storage-backup-result";
+  card.append(result);
+  detailEl.append(card);
+}
+
+async function loadStorageHealth() {
+  detailEl.replaceChildren(el("div", "empty", "加载中"));
+  try {
+    const response = await fetch("/api/storage/health");
+    const data = await response.json();
+    if (!response.ok) {
+      detailEl.replaceChildren(el("div", "error", "加载失败"));
+      return;
+    }
+    renderStorageHealth(data);
+  } catch (_error) {
+    detailEl.replaceChildren(el("div", "error", "加载失败"));
+  }
+}
+
+async function runStorageBackup(button) {
+  button.disabled = true;
+  const result = document.getElementById("storage-backup-result");
+  if (result) result.textContent = "正在备份";
+  try {
+    const response = await fetch("/api/storage/backup", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) {
+      if (result) result.textContent = data.detail || "备份失败";
+      return;
+    }
+    if (result) result.textContent = `${data.filename} · ${data.size_mb} MB · ${data.created_at}`;
+  } catch (_error) {
+    if (result) result.textContent = "备份失败";
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function loadProviderHealth() {
@@ -4257,6 +4329,7 @@ document.getElementById("view-competitors").addEventListener("click", () => setV
 document.getElementById("view-admin").addEventListener("click", () => setView(ADMIN_MODES.includes(viewMode) ? viewMode : "sources"));
 document.getElementById("view-intake").addEventListener("click", () => setView("intake"));
 document.getElementById("view-health").addEventListener("click", () => setView("health"));
+document.getElementById("view-storage").addEventListener("click", () => setView("storage"));
 document.getElementById("view-sources").addEventListener("click", () => setView("sources"));
 document.getElementById("view-imports").addEventListener("click", () => setView("imports"));
 document.getElementById("view-trace").addEventListener("click", () => setView("trace"));

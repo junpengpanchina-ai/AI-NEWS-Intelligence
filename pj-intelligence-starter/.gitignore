@@ -5,5 +5,6 @@ __pycache__/
 venv/
 data/*.db
 data/*.db-*
+data/backups/
 data/sitedata-bridge.token
 .DS_Store

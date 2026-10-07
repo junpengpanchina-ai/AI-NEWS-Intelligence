@@ -24,12 +24,37 @@ def project_root() -> Path:
 
 
 def db_path() -> Path:
-    return project_root() / "data" / "intelligence.db"
+    return project_root() / "data" / "pj_intelligence.db"
+
+
+def _adopt_legacy(path: Path) -> None:
+    legacy = path.with_name("intelligence.db")
+    if path.exists() and path.stat().st_size > 0:
+        return
+    if not legacy.exists() or legacy.stat().st_size == 0:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    source = sqlite3.connect(f"file:{legacy}?mode=ro", uri=True, timeout=30)
+    try:
+        dest = sqlite3.connect(path, timeout=30)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    except Exception:
+        if path.exists():
+            path.unlink()
+        raise
+    finally:
+        source.close()
 
 
 def connect() -> sqlite3.Connection:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    _adopt_legacy(path)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn

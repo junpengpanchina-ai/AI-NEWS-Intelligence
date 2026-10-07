@@ -117,6 +117,7 @@ from app.opportunities import (
     save_opportunity_analysis,
 )
 from app.sitedata import get_settings, recent_signals, run_all, run_rankings, set_auto_create, top_opportunities
+from app.storage import backup_database, log_storage_startup, storage_health
 from app.trace import clear_traces, list_traces, record_trace
 from app.schemas import (
     AnalysisOut,
@@ -185,6 +186,8 @@ from app.schemas import (
     DossierDetailOut,
     DossierListOut,
     ManualIntakeIn,
+    StorageBackupOut,
+    StorageHealthOut,
 )
 from app.dossiers import (
     add_evidence,
@@ -207,6 +210,7 @@ install_google_log_redaction()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    log_storage_startup()
     yield
 
 
@@ -755,6 +759,19 @@ def import_detail(import_id: int):
 @app.get("/api/providers/health", response_model=ProviderHealthOut)
 def providers_health():
     return provider_health(probe_sitedata=True)
+
+
+@app.get("/api/storage/health", response_model=StorageHealthOut)
+def storage_health_view():
+    return storage_health()
+
+
+@app.post("/api/storage/backup", response_model=StorageBackupOut)
+def storage_backup():
+    try:
+        return backup_database()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/sitedata/rankings/run", response_model=SiteDataRunOut)

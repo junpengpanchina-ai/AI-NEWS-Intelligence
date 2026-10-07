@@ -867,3 +867,20 @@ class ManualIntakeIn(BaseModel):
     metric_value: str = ""
     period_month: str = ""
     confidence: str = ""
+
+
+class StorageHealthOut(BaseModel):
+    database_type: str = "sqlite"
+    database_path: str = ""
+    database_exists: bool = False
+    database_size_mb: float = 0
+    writable: bool = False
+    persistent_volume: bool = False
+    last_write_at: str = ""
+    tables: dict[str, int] = {}
+
+
+class StorageBackupOut(BaseModel):
+    filename: str = ""
+    size_mb: float = 0
+    created_at: str = ""
